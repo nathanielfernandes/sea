@@ -36,12 +36,12 @@ pub fn print_statement(statement: &Span<Statement>, str: &str, depth: usize) {
             ty: _,
             value,
         } => {
-            let mutability = if *is_mutable { "mut " } else { "" };
-            println!("{padding}Declaration: {mutability}{name} = ",);
+            let mutability = if is_mutable.value { "mut " } else { "" };
+            println!("{padding}Declaration: {mutability}{} = ", name.value);
             print_math(value, str, depth);
         }
         Statement::Assignment { name, value } => {
-            println!("{padding}Assignment: {name} = ",);
+            println!("{padding}Assignment: {} = ", name.value);
             print_math(value, str, depth);
         }
         Statement::Expression(expr) => {
@@ -86,6 +86,23 @@ pub fn print_statement(statement: &Span<Statement>, str: &str, depth: usize) {
                 print_math(&ret, str, depth + 3);
             } else {
                 println!("{padding}Block: <None>");
+            }
+        }
+
+        Statement::Struct { name, fields } => {
+            println!("{padding}Struct: {}", name.value);
+
+            let padding = "  ".repeat(depth + 1);
+
+            let no_fields = if fields.len() > 0 { "" } else { " <None>" };
+            println!("{padding}Fields:{no_fields}");
+            for field in fields {
+                let padding = "  ".repeat(depth + 2);
+                println!(
+                    "{padding}{}: {}",
+                    field.value.name.value,
+                    type_to_string(&field.value.ty.value)
+                );
             }
         }
 

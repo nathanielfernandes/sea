@@ -114,13 +114,13 @@ impl Compiler {
                 format!(
                     "{} {} = {}",
                     Self::VALUE_TYPE,
-                    self.symbol(name, true),
+                    self.symbol(&name.value, true),
                     value
                 )
             }
             Statement::Assignment { name, value } => {
                 let value = self.compile_expression(value)?;
-                format!("{} = {}", self.symbol(name, true), value)
+                format!("{} = {}", self.symbol(&name.value, true), value)
             }
             Statement::Function(function) => {
                 let (def, delc) = &self.compile_function(function)?;
@@ -133,6 +133,7 @@ impl Compiler {
                 let body = self.compile_expression(body)?;
                 format!("while ({}({})) {}", Self::EXPECT_BOOL, condition, body)
             }
+            Statement::Struct { name, fields } => todo!(),
         };
 
         Ok(code + ";\n")

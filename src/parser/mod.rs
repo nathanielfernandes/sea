@@ -80,18 +80,22 @@ pub enum Expression {
 #[derive(Debug, Clone)]
 pub enum Statement {
     Declaration {
-        name: String,
-        is_mutable: bool,
+        name: Span<String>,
+        is_mutable: Span<bool>,
         ty: Option<Span<Type>>,
         value: Span<Expression>,
     },
     Assignment {
-        name: String,
+        name: Span<String>,
         value: Span<Expression>,
     },
     WhileLoop {
         condition: Span<Expression>,
         body: Box<Span<Expression>>,
+    },
+    Struct {
+        name: Span<String>,
+        fields: Vec<Span<Param>>,
     },
     Expression(Span<Expression>),
     Function(Function),
@@ -99,17 +103,13 @@ pub enum Statement {
 
 #[derive(Debug, Clone, Copy)]
 pub enum FunctionKind {
-    Method {
-        mutable: bool,
-        consuming: bool,
-        span: Span<()>,
-    },
+    Method { mutable: bool, consuming: bool },
     Static,
 }
 
 #[derive(Debug, Clone)]
 pub struct Function {
-    pub function_kind: FunctionKind,
+    pub function_kind: Span<FunctionKind>,
     pub name: Span<String>,
     pub params: Vec<Span<Param>>,
     pub return_type: Option<Span<Type>>,
@@ -225,6 +225,32 @@ impl<'a> Parser<'a> {
         fields
     }
 
+    fn struct_statement(&mut self) -> Option<Span<Statement>> {
+        // struct <symbol> { <symbol> : <type> , <symbol> : <type> , ... }
+        let (struct_start, _) = self.match_token(Token::KwStruct)?;
+
+        let (name, name_start, name_end) = self.symbol()?;
+        let name = Span {
+            start: name_start,
+            end: name_end,
+            value: name.to_string(),
+        };
+
+        self.match_token(Token::OpenCurlyBracket)?;
+
+        let fields = self.comma_sep_params(Token::CloseCurlyBracket);
+
+        let (_, end) = self.match_token(Token::CloseCurlyBracket)?;
+
+        debug_println!("\x1b[32msuccessfully parsed struct\x1b[0m");
+
+        Some(Span {
+            start: struct_start,
+            end,
+            value: Statement::Struct { name, fields },
+        })
+    }
+
     fn ty(&mut self) -> Option<Span<Type>> {
         let (name, name_start, name_end) = self.symbol()?;
         let name = Span {
@@ -257,13 +283,13 @@ impl<'a> Parser<'a> {
         Some(ty)
     }
 
-    fn params(&mut self) -> Vec<Span<Param>> {
+    fn comma_sep_params(&mut self, closing: Token) -> Vec<Span<Param>> {
         let mut params: Vec<Span<Param>> = Vec::new();
 
         while let Some(&token) = self.scanner.peek() {
             let result: Option<_> = try {
                 match token.value {
-                    Token::CloseRoundBracket => {
+                    t if t == closing => {
                         break;
                     }
                     Token::Comma => {
@@ -369,9 +395,15 @@ impl<'a> Parser<'a> {
 
         let (let_start, _) = self.match_token(Token::KwLet)?;
 
-        let is_mutable = self.mutable()?;
+        let mut is_mutable = self.mutable()?;
 
-        let (symbol, _, _) = self.symbol()?;
+        let (symbol, symbol_start, symbol_end) = self.symbol()?;
+
+        if !is_mutable.value {
+            is_mutable.start = symbol_start;
+            is_mutable.end = symbol_end;
+        }
+
         let symbol = symbol.to_string();
 
         debug_println!("\x1b[36m>> symbol({symbol})\x1b[0m");
@@ -415,7 +447,11 @@ impl<'a> Parser<'a> {
             start: let_start,
             end: semicolon_end,
             value: Statement::Declaration {
-                name: symbol.to_string(),
+                name: Span {
+                    start: symbol_start,
+                    end: symbol_end,
+                    value: symbol,
+                },
                 ty,
                 is_mutable,
                 value: expr,
@@ -425,7 +461,7 @@ impl<'a> Parser<'a> {
 
     fn assignment_statement(&mut self) -> Option<Span<Statement>> {
         // <symbol> = <expression> ;
-        let (symbol, symbol_start, _) = self.symbol()?;
+        let (symbol, symbol_start, symbol_end) = self.symbol()?;
         let symbol = symbol.to_string();
 
         debug_println!("\x1b[36m>> symbol({symbol})\x1b[0m");
@@ -461,7 +497,11 @@ impl<'a> Parser<'a> {
             start: symbol_start,
             end: semicolon_end,
             value: Statement::Assignment {
-                name: symbol.to_string(),
+                name: Span {
+                    start: symbol_start,
+                    end: symbol_end,
+                    value: symbol,
+                },
                 value: expr,
             },
         })
@@ -521,23 +561,25 @@ impl<'a> Parser<'a> {
                     .transaction(|this| this.match_token(Token::Ampersand))
                     .is_none();
 
-                let mutable = this.transaction(|this| this.mutable()).unwrap_or(false);
+                let mutable = this
+                    .transaction(|this| this.mutable().map(|m| m.value))
+                    .unwrap_or(false);
 
                 let (_, end) = this.match_token(Token::KwSelf)?;
 
-                Some(FunctionKind::Method {
-                    mutable,
-                    consuming,
-                    span: Span {
-                        start,
-                        end,
-                        value: (),
-                    },
+                Some(Span {
+                    start,
+                    end,
+                    value: FunctionKind::Method { mutable, consuming },
                 })
             })
-            .unwrap_or(FunctionKind::Static);
+            .unwrap_or(Span {
+                start: 0,
+                end: 0,
+                value: FunctionKind::Static,
+            });
 
-        let params = self.params();
+        let params = self.comma_sep_params(Token::CloseRoundBracket);
 
         self.match_token(Token::CloseRoundBracket)?;
 
@@ -616,6 +658,7 @@ impl<'a> Parser<'a> {
         self.whitespace();
 
         self.try_each([
+            Self::struct_statement,
             Self::function_definition_statement,
             Self::while_loop_statement,
             Self::let_declaration_statement,
@@ -675,9 +718,13 @@ impl<'a> Parser<'a> {
         self.scanner.skip_all([Token::WhiteSpace, Token::Comment]);
     }
 
-    fn mutable(&mut self) -> Option<bool> {
-        if let Some(_) = self.match_token(Token::KwMut) {
-            return Some(true);
+    fn mutable(&mut self) -> Option<Span<bool>> {
+        if let Some((start, end)) = self.match_token(Token::KwMut) {
+            return Some(Span {
+                start,
+                end,
+                value: true,
+            });
         }
 
         // let token = self.scanner.peek()?;
@@ -688,7 +735,11 @@ impl<'a> Parser<'a> {
         // self.error(error);
 
         // return None; //TODO: we can still return Some(false) here if we want the parser to not stop trying to parse a declaration or something
-        Some(false)
+        Some(Span {
+            start: 0,
+            end: 0,
+            value: false,
+        })
     }
 
     fn symbol(&mut self) -> Option<(&str, usize, usize)> {
