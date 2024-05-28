@@ -2,9 +2,9 @@ use std::fs::read_to_string;
 
 use eyre::Result;
 
-use interpreter::parser;
-use interpreter::parser::debug::print_statement;
-use interpreter::parser::lexer;
+use sea::parser;
+use sea::parser::debug::print_statement;
+use sea::parser::lexer;
 
 fn call(command_name: &str, args: &[&str]) -> Result<String> {
     let output = std::process::Command::new(command_name)
@@ -33,11 +33,11 @@ fn main() {
         println!("{:?} => {:?}", error, spanned);
     }
 
-    // for statement in statements.iter() {
-    //     print_statement(statement, input, 0)
-    // }
+    for statement in statements.iter() {
+        print_statement(statement, input, 0)
+    }
 
-    let compiler = interpreter::compiler::Compiler::new("user".to_string());
+    let compiler = sea::compiler::Compiler::new("user".to_string());
 
     let code = compiler.compile(&statements).expect("Failed to compile");
 
