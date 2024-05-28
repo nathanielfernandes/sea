@@ -1,0 +1,6 @@
+{
+    "files.exclude": {
+        "target": true,
+        "src_old": true,
+    }
+}
