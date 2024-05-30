@@ -4,22 +4,45 @@
 
 A dynamic progamming language that transpiles to C.
 
+currently working on the parser, and IR generation.
+
 ```rust
-fn fib(n) {
-    if n < 2 {
-        return n;
-    }
+let a = 20;
+let a = 30 + a;
 
-    return fib(n - 1) + fib(n - 2);
+let b = {
+    let b = {
+        a
+    };
+
+    b
+};
+```
+
+ir output:
+
+```rust
+fn __main() -> Unit {
+  let _0: Any;
+  let _1: Any;
+  let _2: Any;
+  let _3: Any;
+
+  bb0: {
+    _0 = const 20;
+    _1 = add(const 30, _0) -> [goto bb1];
+  }
+
+  bb1: {
+    _3 = <upvalue: _1> -> [goto bb2];
+  }
+
+  bb2: {
+    _2 = _3 -> [goto bb3];
+  }
+
+  bb3: {
+    [return];
+  }
 }
-
-println(fib(40));
-```
-
-```
--------------- Running --------------
-102334155
-
--------------------------------------
-Time: 1.594973513s
 ```

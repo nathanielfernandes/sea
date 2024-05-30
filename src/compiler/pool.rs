@@ -53,6 +53,19 @@ where
         }
     }
 
+    // only adds the value to the pool if it doesn't already exist.
+    #[inline]
+    pub fn add_checked(&mut self, value: V) -> Option<ID> {
+        if let Some(_) = self.duplicates.get(&value) {
+            None
+        } else {
+            let id = ID::from_usize(self.entries.len());
+            self.entries.push(value.clone());
+            self.duplicates.insert(value, id);
+            Some(id)
+        }
+    }
+
     // Add a value to the pool.
     // forces the value to be added to the pool, even if it already exists.
     // The ID can be used to retrieve the value from the pool.

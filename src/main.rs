@@ -41,7 +41,10 @@ fn main() {
     let mut ircompiler = sea::compiler::ir::IRCompiler::new();
 
     for stat in statements.iter() {
-        ircompiler.compile_statement(stat);
+        if let Err(e) = ircompiler.compile_statement(stat, None) {
+            ircompiler.print();
+            panic!("{:?}", e);
+        }
     }
 
     ircompiler.print();

@@ -1,6 +1,6 @@
 // IR for tha ast
 
-use crate::parser::{scanner::Span, BinaryOp, Expression, Literal, Statement, Type};
+use crate::parser::{scanner::Span, BinaryOp, Expression, Function, Literal, Statement, Type};
 
 use super::pool::Pool;
 
@@ -18,6 +18,7 @@ pub enum IRType {
     String,
 
     Struct(Span<String>),
+    Function(Vec<Span<IRType>>, Box<Span<IRType>>),
 }
 
 #[derive(Debug, Clone)]
@@ -32,6 +33,7 @@ pub enum IRConstant {
 pub enum IRValue {
     Constant(IRConstant),
     Variable(TempId), // identifier for temporary value
+    UpValue(TempId),  // identifier for upvalue
 }
 
 pub enum IRStatement {
@@ -41,16 +43,42 @@ pub enum IRStatement {
     },
     CallAssignment {
         target: Span<TempId>,
+        function: Span<IRValue>,
+        arguments: Vec<Span<IRValue>>,
+    },
+    BuiltinCallAssignment {
+        target: Span<TempId>,
         function: Span<String>,
         arguments: Vec<Span<IRValue>>,
     },
 }
+
+#[derive(Debug, Clone)]
+pub enum IRError {
+    UndefinedVariable(String),
+    UninitializedVariable(String),
+    RedclaredParam(String),
+}
+
+impl IRError {
+    pub fn to_unintialized_variable(self) -> IRError {
+        match self {
+            IRError::UndefinedVariable(name) => IRError::UninitializedVariable(name),
+            _ => self,
+        }
+    }
+}
+
+pub type Result<T> = std::result::Result<T, IRError>;
 
 impl IRStatement {
     pub fn target(&self) -> TempId {
         match self {
             IRStatement::ValueAssignment { target, .. } => target.value,
             IRStatement::CallAssignment { target, .. } => target.value,
+            IRStatement::BuiltinCallAssignment { target, .. } => target.value,
+
+            _ => panic!("No target"),
         }
     }
 }
@@ -63,6 +91,8 @@ pub struct IRBlock {
 
 #[derive(Debug, Clone)]
 pub struct IRVar {
+    pub dead: bool,
+
     pub initialized: bool,
 
     pub id: Span<TempId>,
@@ -75,6 +105,8 @@ pub struct IRVar {
 pub struct IRFunction {
     pub name: Span<String>,
     pub locals: Vec<IRVar>,
+    pub params: Vec<IRVar>,
+    pub ret_ty: Span<IRType>,
     pub blocks: Vec<IRBlock>,
 }
 
@@ -89,26 +121,43 @@ struct Level {
 }
 
 impl Level {
-    fn resolve_enclosing(&self, name: &str) -> Option<&IRVar> {
+    fn resolve_enclosing(&self, name: &str, need_init: bool) -> Result<&IRVar> {
         if let Some(enclosing) = &self.enclosing {
-            if let Some(var) = enclosing.resolve_local(name) {
-                return Some(var);
+            if let Ok(var) = enclosing.resolve_local(name, need_init) {
+                return Ok(var);
             }
 
-            return enclosing.resolve_enclosing(name);
+            return enclosing.resolve_enclosing(name, need_init);
         }
 
-        None
+        Err(IRError::UndefinedVariable(name.to_string()))
     }
 
-    fn resolve_local(&self, name: &str) -> Option<&IRVar> {
-        for local in self.function.locals.iter().rev() {
+    fn resolve_local(&self, name: &str, need_init: bool) -> Result<&IRVar> {
+        let mut err = IRError::UndefinedVariable(name.to_string());
+
+        for local in self
+            .function
+            .params
+            .iter()
+            .chain(self.function.locals.iter())
+            .rev()
+        {
+            if local.dead {
+                continue;
+            }
+
+            if need_init && !local.initialized {
+                err = err.to_unintialized_variable();
+                continue;
+            }
+
             if local.name.as_ref().map(|n| n == name).unwrap_or(false) {
-                return Some(local);
+                return Ok(local);
             }
         }
 
-        None
+        Err(err)
     }
 }
 
@@ -125,10 +174,16 @@ impl IRCompiler {
                 enclosing: None,
                 function: IRFunction {
                     name: Span {
-                        value: "main".to_string(),
+                        value: "__main".to_string(),
                         start: 0,
                         end: 0,
                     },
+                    ret_ty: Span {
+                        value: IRType::Unit,
+                        start: 0,
+                        end: 0,
+                    },
+                    params: Vec::new(),
                     locals: Vec::new(),
                     blocks: vec![IRBlock {
                         id: 0,
@@ -150,6 +205,11 @@ impl IRCompiler {
 
     fn symbol<S: Into<String>>(&mut self, symbol: S) -> TempId {
         self.level.symbol_table.add(symbol.into())
+    }
+
+    // used for params, params should be unique
+    fn only_new_symbol<S: Into<String>>(&mut self, symbol: S) -> Option<TempId> {
+        self.level.symbol_table.add_checked(symbol.into())
     }
 
     fn shadow_symbol<S: Into<String>>(&mut self, symbol: S) -> TempId {
@@ -176,22 +236,83 @@ impl IRCompiler {
         self.functions.push(level.function);
     }
 
+    fn enter_function(&mut self, name: Span<String>, ty: Span<IRType>, ret_ty: Span<IRType>) {
+        let id = self.declare_local(&name, ty);
+        self.initialize_local(id.value);
+
+        let function = IRFunction {
+            name,
+            ret_ty,
+            params: Vec::new(),
+            locals: Vec::new(),
+            blocks: vec![IRBlock {
+                id: 0,
+                statements: Vec::new(),
+                next_block: None,
+            }],
+        };
+
+        self.enter_level(Level {
+            enclosing: None,
+            function,
+            scope_depth: self.level.scope_depth + 1,
+            symbol_table: Pool::new(),
+        });
+    }
+
+    fn exit_function(&mut self) {
+        self.exit_level();
+    }
+
     fn enter_scope(&mut self) {
         self.level.scope_depth += 1;
     }
 
     fn exit_scope(&mut self) {
         self.level.scope_depth -= 1;
+
+        for local in self.level.function.locals.iter_mut().rev() {
+            if local.depth > self.level.scope_depth {
+                local.dead = true;
+            }
+        }
     }
 
-    fn get_variable(&self, name: &str) -> &IRVar {
-        if let Some(var) = self.level.resolve_local(name) {
-            return var;
-        } else if let Some(enclosing) = self.level.resolve_enclosing(name) {
-            return enclosing;
+    fn enter_block(&mut self) {
+        if let Some(block) = self.level.function.blocks.last_mut() {
+            if block.statements.is_empty() {
+                return;
+            }
+
+            let id = block.id + 1;
+            block.next_block = Some(id);
+
+            self.level.function.blocks.push(IRBlock {
+                id,
+                statements: Vec::new(),
+                next_block: None,
+            });
+            return;
         }
 
-        panic!("Variable not found: {}", name);
+        panic!("No block");
+    }
+
+    fn enter_scoped_block(&mut self) {
+        self.enter_scope();
+        self.enter_block();
+    }
+
+    fn exit_scoped_block(&mut self) {
+        self.exit_scope();
+        self.enter_block();
+    }
+
+    fn get_variable(&self, name: &str, need_init: bool) -> Result<&IRVar> {
+        match self.level.resolve_local(name, need_init) {
+            Ok(var) => return Ok(var),
+            Err(_) => return self.level.resolve_enclosing(name, need_init),
+        };
     }
 
     fn map_type(ty: &Option<Span<Type>>) -> Span<IRType> {
@@ -232,10 +353,15 @@ impl IRCompiler {
     }
 
     fn declare_local(&mut self, name: &Span<String>, ty: Span<IRType>) -> Span<TempId> {
-        for i in (0..self.level.function.locals.len()).rev() {
-            let local = &self.level.function.locals[i];
-
-            if local.depth < self.level.scope_depth {
+        for local in self
+            .level
+            .function
+            .params
+            .iter()
+            .chain(self.level.function.locals.iter())
+            .rev()
+        {
+            if local.dead && local.depth < self.level.scope_depth {
                 break;
             }
 
@@ -248,6 +374,7 @@ impl IRCompiler {
                 // variable aldready declared
                 let id = name.span(self.shadow_symbol(&name.value));
                 self.level.function.locals.push(IRVar {
+                    dead: false,
                     initialized: false,
 
                     id,
@@ -261,8 +388,9 @@ impl IRCompiler {
         }
 
         // variable not declared
-        let id = name.span(self.symbol(name.value.clone()));
+        let id = name.span(self.symbol(&name.value));
         self.level.function.locals.push(IRVar {
+            dead: false,
             initialized: false,
 
             id,
@@ -274,8 +402,34 @@ impl IRCompiler {
         id
     }
 
+    fn declare_param(&mut self, name: &Span<String>, ty: Span<IRType>) -> Result<Span<TempId>> {
+        let id = self
+            .only_new_symbol(&name.value)
+            .ok_or(IRError::RedclaredParam(name.value.clone()))?;
+
+        let id = name.span(id);
+        self.level.function.params.push(IRVar {
+            dead: false,
+            initialized: true,
+
+            id,
+            ty,
+            name: Some(name.value.clone()),
+            depth: self.level.scope_depth,
+        });
+
+        Ok(id)
+    }
+
     fn initialize_local(&mut self, id: TempId) {
-        for local in self.level.function.locals.iter_mut().rev() {
+        for local in self
+            .level
+            .function
+            .params
+            .iter_mut()
+            .chain(self.level.function.locals.iter_mut())
+            .rev()
+        {
             if local.id.value == id {
                 local.initialized = true;
                 return;
@@ -297,7 +451,11 @@ impl IRCompiler {
         });
     }
 
-    pub fn compile_statement(&mut self, Span { start, end, value }: &Span<Statement>) {
+    pub fn compile_statement(
+        &mut self,
+        Span { start, end, value }: &Span<Statement>,
+        target: Option<Span<TempId>>,
+    ) -> Result<()> {
         match value {
             Statement::Declaration {
                 name,
@@ -306,10 +464,60 @@ impl IRCompiler {
                 value,
             } => {
                 let target = self.declare_local(name, Self::map_type(ty));
-                self.compile_expression(value, Some(target));
+                self.compile_expression(value, Some(target))?;
+
+                Ok(())
+            }
+            Statement::Expression(expression) => {
+                self.compile_expression(expression, target)?;
+                Ok(())
+            }
+            Statement::Function(Function {
+                function_kind,
+                name,
+                params,
+                return_type,
+                body,
+            }) => {
+                let param_tys = params
+                    .iter()
+                    .map(|param| Self::map_type(&Some(param.value.ty.clone())))
+                    .collect::<Vec<_>>();
+                let ret_ty = Self::map_type(&return_type);
+
+                let ty = IRType::Function(param_tys, Box::new(ret_ty.clone()));
+
+                self.enter_function(name.clone(), name.span(ty), ret_ty);
+
+                for param in params {
+                    self.declare_param(
+                        &param.value.name,
+                        Self::map_type(&Some(param.value.ty.clone())),
+                    )?;
+                }
+
+                for statement in &body.value.statements {
+                    self.compile_statement(statement, None)?;
+                }
+
+                if let Some(ret) = &body.value.ret {
+                    self.compile_expression(ret, None)?;
+                }
+
+                self.exit_function();
+
+                Ok(())
             }
 
             _ => todo!(),
+        }
+    }
+
+    fn unit(start: usize, end: usize) -> Span<IRValue> {
+        Span {
+            start,
+            end,
+            value: IRValue::Constant(IRConstant::Unit),
         }
     }
 
@@ -317,7 +525,7 @@ impl IRCompiler {
         &mut self,
         Span { start, end, value }: &Span<Expression>,
         target: Option<Span<TempId>>,
-    ) -> Span<IRValue> {
+    ) -> Result<Span<IRValue>> {
         match value {
             Expression::Literal(value) => {
                 //
@@ -348,11 +556,11 @@ impl IRCompiler {
                     });
                 }
 
-                v
+                Ok(v)
             }
             Expression::Binary { op, lhs, rhs } => {
-                let lhs_value = self.compile_expression(lhs, None);
-                let rhs_value = self.compile_expression(rhs, None);
+                let lhs_value = self.compile_expression(lhs, None)?;
+                let rhs_value = self.compile_expression(rhs, None)?;
 
                 let target = match target {
                     Some(target) => target,
@@ -363,13 +571,9 @@ impl IRCompiler {
                     }),
                 };
 
-                let op = match op {
-                    BinaryOp::Add => "add",
-                    BinaryOp::Div => "div",
-                    _ => todo!(),
-                };
+                let op = get_op(*op);
 
-                self.push_statement(IRStatement::CallAssignment {
+                self.push_statement(IRStatement::BuiltinCallAssignment {
                     target,
                     function: Span {
                         start: *start,
@@ -379,18 +583,22 @@ impl IRCompiler {
                     arguments: vec![lhs_value, rhs_value],
                 });
 
-                target.span(IRValue::Variable(target.value))
+                Ok(target.span(IRValue::Variable(target.value)))
             }
             Expression::Symbol(symbol) => {
-                let var = self.get_variable(&symbol);
-                if !var.initialized {
-                    panic!("Variable not initialized: {}", symbol);
-                }
+                let var = self.get_variable(&symbol, true)?;
+                // if !var.initialized {
+                //     panic!("Variable not initialized: {}", symbol);
+                // }
 
                 let value = Span {
                     start: *start,
                     end: *end,
-                    value: IRValue::Variable(var.id.value),
+                    value: if var.depth < self.level.scope_depth {
+                        IRValue::UpValue(var.id.value)
+                    } else {
+                        IRValue::Variable(var.id.value)
+                    },
                 };
 
                 if let Some(target) = target {
@@ -400,7 +608,72 @@ impl IRCompiler {
                     });
                 }
 
-                value
+                Ok(value)
+            }
+            Expression::FunctionCall { func, args } => {
+                let func = self.compile_expression(func, None)?;
+
+                let args = args
+                    .iter()
+                    .map(|arg| self.compile_expression(arg, None))
+                    .collect::<Result<Vec<_>>>()?;
+
+                let target = match target {
+                    Some(target) => target,
+                    None => self.temp(Span {
+                        start: *start,
+                        end: *end,
+                        value: IRType::Any,
+                    }),
+                };
+
+                self.push_statement(IRStatement::CallAssignment {
+                    target,
+                    function: func,
+                    arguments: args,
+                });
+
+                Ok(target.span(IRValue::Variable(target.value)))
+            }
+            Expression::Block { statements, ret } => {
+                self.enter_scoped_block();
+
+                for statement in statements {
+                    self.compile_statement(statement, None)?;
+                }
+
+                if let Some(ret) = ret {
+                    let res = self.compile_expression(ret, target);
+                    self.exit_scoped_block();
+                    return res;
+                }
+
+                let ret = Self::unit(*start, *end);
+
+                match target {
+                    Some(target) => {
+                        self.push_statement(IRStatement::ValueAssignment {
+                            target,
+                            value: ret.clone(),
+                        });
+                    }
+                    None => {}
+                }
+
+                self.exit_scoped_block();
+                Ok(ret)
+
+                // if let Some(ret) = ret {
+                //     let ret = self.compile_expression(ret, target)?;
+                //     self.push_statement(IRStatement::ValueAssignment {
+                //         target: target.expect("No target"),
+                //         value: ret,
+                //     });
+                // }
+
+                // self.exit_block();
+
+                // Ok(Self::unit(*start, *end))
             }
             erm => todo!("{:?}", erm),
         }
@@ -418,24 +691,35 @@ impl IRCompiler {
                 format!("const {}", c)
             }
             IRValue::Variable(id) => format!("_{}", id),
+            IRValue::UpValue(id) => format!("<upvalue: _{}>", id),
         }
     }
 
     fn print_function(function: &IRFunction) {
-        println!("fn {}", function.name.value);
+        println!("fn {}(", function.name.value);
+        for param in &function.params {
+            println!("  _{}: {:?}", param.id.value, param.ty.value);
+        }
+        println!(") -> {:?} {{", function.ret_ty.value);
         for local in &function.locals {
-            println!("let _{}: {:?};", local.id.value, local.ty.value);
+            println!("  let _{}: {:?};", local.id.value, local.ty.value);
         }
 
         println!();
 
         for block in &function.blocks {
-            println!("b{}:", block.id);
+            println!("  bb{}: {{", block.id);
+            let mut first = true;
             for statement in &block.statements {
+                if first {
+                    first = false;
+                } else {
+                    println!(";");
+                }
                 match &statement.value {
                     IRStatement::ValueAssignment { target, value } => {
-                        println!(
-                            "  _{} = {}",
+                        print!(
+                            "    _{} = {}",
                             target.value,
                             Self::format_ir_value(&value.value)
                         );
@@ -450,17 +734,74 @@ impl IRCompiler {
                             .map(|arg| Self::format_ir_value(&arg.value))
                             .collect::<Vec<_>>()
                             .join(", ");
-                        println!("  _{} = {}({})", target.value, function.value, args);
+                        print!(
+                            "    _{} = {}({})",
+                            target.value,
+                            Self::format_ir_value(&function.value),
+                            args
+                        );
+                    }
+                    IRStatement::BuiltinCallAssignment {
+                        target,
+                        function,
+                        arguments,
+                    } => {
+                        let args = arguments
+                            .iter()
+                            .map(|arg| Self::format_ir_value(&arg.value))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        print!("    _{} = {}({})", target.value, function.value, args);
                     }
 
                     _ => todo!(),
                 }
             }
+            match block.next_block {
+                Some(next) => println!(" -> [goto bb{}];\n  }}\n", next),
+                None => println!("    [return];\n  }}"),
+            }
         }
+
+        println!("}}");
     }
 
     pub fn print(&self) {
         let func = &self.level.function;
         Self::print_function(&func);
+        println!();
+
+        for func in &self.functions {
+            Self::print_function(&func);
+            println!();
+        }
+    }
+}
+
+fn get_op(op: BinaryOp) -> &'static str {
+    use BinaryOp::*;
+    match op {
+        Add => "add",
+        Sub => "sub",
+        Mul => "mul",
+        Div => "div",
+        Mod => "mod",
+        Equals => "eq",
+        NotEquals => "neq",
+        Greater => "gt",
+        Less => "lt",
+        GreaterEqual => "gte",
+        LessEqual => "lte",
+        And => "and",
+        Or => "or",
+        Not => "not",
+
+        BitwiseAnd => "bitand",
+        BitwiseOr => "bitor",
+
+        BitwiseXor => "bitxor",
+        BitwiseNot => "bitnot",
+        LeftShift => "shl",
+        RightShift => "shr",
     }
 }
