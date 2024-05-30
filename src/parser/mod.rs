@@ -43,13 +43,17 @@ pub enum BinaryOp {
 }
 
 #[derive(Debug, Clone)]
-pub enum Expression {
+pub enum Literal {
     Unit,
     Bool(bool),
     Int(i64),
     Float(f64),
     String(String),
+}
 
+#[derive(Debug, Clone)]
+pub enum Expression {
+    Literal(Literal),
     Symbol(String),
     FunctionCall {
         func: Box<Span<Expression>>,
@@ -834,7 +838,7 @@ impl<'a> Parser<'a> {
             Token::String => {
                 self.scanner.next();
                 let string = &self.input[token.start + 1..token.end - 1];
-                token.span(Expression::String(string.to_string()))
+                token.span(Expression::Literal(Literal::String(string.to_string())))
             }
 
             Token::Int => {
@@ -848,7 +852,7 @@ impl<'a> Parser<'a> {
                         return None;
                     }
                 };
-                token.span(Expression::Int(int))
+                token.span(Expression::Literal(Literal::Int(int)))
             }
             Token::Float => {
                 self.scanner.next();
@@ -860,7 +864,7 @@ impl<'a> Parser<'a> {
                         return None;
                     }
                 };
-                token.span(Expression::Float(float))
+                token.span(Expression::Literal(Literal::Float(float)))
             }
             Token::Symbol => {
                 self.scanner.next();
@@ -868,8 +872,8 @@ impl<'a> Parser<'a> {
 
                 // bool check
                 let value = match symbol {
-                    "true" => Expression::Bool(true),
-                    "false" => Expression::Bool(false),
+                    "true" => Expression::Literal(Literal::Bool(true)),
+                    "false" => Expression::Literal(Literal::Bool(false)),
                     _ => Expression::Symbol(symbol.to_string()),
                 };
 
@@ -882,7 +886,7 @@ impl<'a> Parser<'a> {
                 if let Some(&token) = self.scanner.peek() {
                     if token.value == Token::CloseRoundBracket {
                         self.scanner.next();
-                        return Some(token.span(Expression::Unit));
+                        return Some(token.span(Expression::Literal(Literal::Unit)));
                     }
                 }
 

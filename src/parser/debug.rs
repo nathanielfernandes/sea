@@ -116,15 +116,18 @@ pub fn print_math(expr: &Span<Expression>, str: &str, depth: usize) {
     let padding = "  ".repeat(depth);
 
     match &expr.value {
-        Expression::Int(int) => {
-            println!("{padding}Int: {int}");
-        }
-        Expression::Float(float) => {
-            println!("{padding}Float: {float}");
-        }
-        Expression::Symbol(symbol) => {
-            println!("{padding}Symbol: {symbol}");
-        }
+        //     Expression::Int(int) => {
+        //         println!("{padding}Int: {int}");
+        //     }
+        //     Expression::Float(float) => {
+        //         println!("{padding}Float: {float}");
+        //     }
+        //     Expression::Symbol(symbol) => {
+        //         println!("{padding}Symbol: {symbol}");
+        //     }
+        // Expression::String(string) => {
+        //         println!("{padding}String: {string:?}");
+        //     }
         Expression::FunctionCall { func, args } => {
             println!("{padding}FunctionCall:");
 

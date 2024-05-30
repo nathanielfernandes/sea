@@ -195,6 +195,53 @@ Result less(Value x, Value y) {
     return Ok(res);
 }
 
+Result equals(Value x, Value y) {
+    if (x.type != y.type)
+        return Ok(Bool(0));
+
+    Value res;
+
+    switch (x.type) {
+    case INT:
+        switch (y.type) {
+        case INT:
+            res = Bool(x.data.Int == y.data.Int);
+            break;
+        case FLOAT:
+            res = Bool(x.data.Int == y.data.Float);
+            break;
+        default:
+            return Err(String("Type mismatch in equals"));
+        }
+        break;
+    case FLOAT:
+        switch (y.type) {
+        case INT:
+            res = Bool(x.data.Float == y.data.Int);
+            break;
+        case FLOAT:
+            res = Bool(x.data.Float == y.data.Float);
+            break;
+        default:
+            return Err(String("Type mismatch in equals"));
+        }
+        break;
+    case STRING:
+        switch (y.type) {
+        case STRING:
+            res = Bool(strcmp(x.data.String.data, y.data.String.data) == 0);
+            break;
+        default:
+            return Err(String("Type mismatch in equals"));
+        }
+        break;
+    default:
+        return Err(String("Type mismatch in equals"));
+    }
+
+    return Ok(res);
+}
+
 Result print(Value x) {
     switch (x.type) {
     case UNIT:

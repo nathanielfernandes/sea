@@ -1,7 +1,12 @@
+pub mod ir;
+pub mod pool;
+
 use eyre::Result;
 use std::fs::read_to_string;
 
-use crate::parser::{scanner::Span, BinaryOp, Body, Expression, Function, Param, Statement};
+use crate::parser::{
+    scanner::Span, BinaryOp, Body, Expression, Function, Literal, Param, Statement,
+};
 
 pub struct Compiler {
     user_prefix: String,
@@ -124,8 +129,8 @@ impl Compiler {
             }
             Statement::Function(function) => {
                 let (def, delc) = &self.compile_function(function)?;
-                self.function_declarations.push_str(delc);
                 self.function_definitions.push_str(def);
+                self.function_declarations.push_str(delc);
                 return Ok(String::new());
             }
             Statement::WhileLoop { condition, body } => {
@@ -144,11 +149,14 @@ impl Compiler {
         Span { start, end, value }: &Span<Expression>,
     ) -> Result<String> {
         let expr = match value {
-            Expression::Unit => Self::unit(),
-            Expression::Bool(b) => Self::bool(*b),
-            Expression::Int(i) => Self::int(*i),
-            Expression::Float(f) => Self::float(*f),
-            Expression::String(s) => Self::string(s),
+            Expression::Literal(l) => match l {
+                Literal::Unit => Self::unit(),
+                Literal::Bool(b) => Self::bool(*b),
+                Literal::Int(i) => Self::int(*i),
+                Literal::Float(f) => Self::float(*f),
+                Literal::String(s) => Self::string(s),
+            },
+
             Expression::Symbol(s) => self.symbol(s, false),
             Expression::FunctionCall { func, args } => {
                 let args = args

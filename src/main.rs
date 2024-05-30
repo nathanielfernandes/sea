@@ -1,4 +1,5 @@
 use std::fs::read_to_string;
+use std::os::linux::raw::stat;
 
 use eyre::Result;
 
@@ -33,30 +34,38 @@ fn main() {
         println!("{:?} => {:?}", error, spanned);
     }
 
-    for statement in statements.iter() {
-        print_statement(statement, input, 0)
+    // for statement in statements.iter() {
+    //     print_statement(statement, input, 0)
+    // }
+
+    let mut ircompiler = sea::compiler::ir::IRCompiler::new();
+
+    for stat in statements.iter() {
+        ircompiler.compile_statement(stat);
     }
 
-    let compiler = sea::compiler::Compiler::new("user".to_string());
+    ircompiler.print();
 
-    let code = compiler.compile(&statements).expect("Failed to compile");
+    // let compiler = sea::compiler::Compiler::new("user".to_string());
 
-    std::fs::write("output.c", code).expect("Failed to write file");
+    // let code = compiler.compile(&statements).expect("Failed to compile");
 
-    call("clang-format", &["-i", "output.c"]).expect("Failed to format");
+    // std::fs::write("output.c", code).expect("Failed to write file");
 
-    call("gcc", &["output.c", "-O3", "-o", "output"]).expect("Failed to compile");
+    // call("clang-format", &["-i", "output.c"]).expect("Failed to format");
 
-    println!("\x1b[36m{}\x1b[0m", "-------------- Running --------------");
+    // call("gcc", &["output.c", "-O3", "-o", "output"]).expect("Failed to compile");
 
-    let start = std::time::Instant::now();
-    call("./output", &[]).expect("Failed to run");
-    let end = start.elapsed();
+    // println!("\x1b[36m{}\x1b[0m", "-------------- Running --------------");
 
-    println!(
-        "\n\x1b[36m{}\x1b[0m",
-        "-------------------------------------"
-    );
+    // let start = std::time::Instant::now();
+    // call("./output", &[]).expect("Failed to run");
+    // let end = start.elapsed();
 
-    println!("\x1b[32m{}\x1b[0m", format!("Time: {:?}", end));
+    // println!(
+    //     "\n\x1b[36m{}\x1b[0m",
+    //     "-------------------------------------"
+    // );
+
+    // println!("\x1b[32m{}\x1b[0m", format!("Time: {:?}", end));
 }
