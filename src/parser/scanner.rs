@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, hash::Hash};
 
 #[derive(Clone, Copy)]
 pub struct Span<T> {
@@ -7,19 +7,30 @@ pub struct Span<T> {
     pub value: T,
 }
 
+impl<T> Hash for Span<T>
+where
+    T: Hash,
+{
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.value.hash(state)
+    }
+}
+
 impl<A> Span<A> {
+    pub fn default(value: A) -> Self {
+        Self {
+            start: 0,
+            end: 0,
+            value,
+        }
+    }
+
     pub fn span<B>(&self, value: B) -> Span<B> {
         Span {
             start: self.start,
             end: self.end,
             value,
         }
-    }
-}
-
-impl std::hash::Hash for Span<()> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.value.hash(state)
     }
 }
 

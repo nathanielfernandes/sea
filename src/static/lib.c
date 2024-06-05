@@ -195,6 +195,41 @@ Result less(Value x, Value y) {
     return Ok(res);
 }
 
+Result mul(Value x, Value y) {
+    Value res;
+
+    switch (x.type) {
+    case INT:
+        switch (y.type) {
+        case INT:
+            res = Int(x.data.Int * y.data.Int);
+            break;
+        case FLOAT:
+            res = Float(x.data.Int * y.data.Float);
+            break;
+        default:
+            return Err(String("Type mismatch in mul"));
+        }
+        break;
+    case FLOAT:
+        switch (y.type) {
+        case INT:
+            res = Float(x.data.Float * y.data.Int);
+            break;
+        case FLOAT:
+            res = Float(x.data.Float * y.data.Float);
+            break;
+        default:
+            return Err(String("Type mismatch in mul"));
+        }
+        break;
+    default:
+        return Err(String("Type mismatch in mul"));
+    }
+
+    return Ok(res);
+}
+
 Result equals(Value x, Value y) {
     if (x.type != y.type)
         return Ok(Bool(0));

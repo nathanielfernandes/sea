@@ -6,7 +6,6 @@
 
 Result __main() {
     /* {{main}} */
-    return Ok(Unit());
 }
 
 int main() {
