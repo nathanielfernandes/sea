@@ -154,6 +154,7 @@ impl Lexer {
         ScanResult::Commit
     }
 
+    //TODO fix this shit
     fn float(&mut self) -> ScanResult {
         let start = self.scanner.position();
 

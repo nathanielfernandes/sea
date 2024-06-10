@@ -2,7 +2,7 @@ pub mod debug;
 pub mod lexer;
 pub mod scanner;
 
-use std::usize;
+use std::{cell::RefCell, usize};
 
 use self::{
     lexer::Token,
@@ -136,7 +136,8 @@ pub struct Param {
 pub enum Type {
     Any,
 
-    Name(String),
+    Named(RefCell<Vec<String>>),
+
     //TODO not currently parsed
     Function {
         params: Vec<Span<Type>>,
@@ -280,7 +281,7 @@ impl<'a> Parser<'a> {
             _ => Span {
                 start: name_start,
                 end: name_end,
-                value: Type::Name(name.value),
+                value: Type::Named(RefCell::new(vec![name.value])),
             },
         };
 
