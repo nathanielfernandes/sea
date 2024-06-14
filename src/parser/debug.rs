@@ -6,7 +6,7 @@ pub fn type_to_string(ty: &Type) -> String {
     match ty {
         Type::Any => "Any".to_string(),
         Type::Named(path) => path.borrow().join("::"),
-        Type::Function { params, ret } => {
+        Type::Function { params, ret, .. } => {
             let params = params
                 .iter()
                 .map(|x| type_to_string(&x.value))

@@ -26,13 +26,21 @@ impl Dump for Path<InternedString> {
         let mut out = String::new();
 
         for id in self.0.iter().take(self.0.len() - 1) {
-            let name = ctx.strings.get(*id).expect("invalid interned string");
+            let name = ctx
+                .strings()
+                .get(*id)
+                .expect("invalid interned string")
+                .clone();
             out.push_str(&name.as_str().custom_color(STRUCT).to_string());
             out.push_str("::");
         }
 
         let last = *self.last().expect("empty path");
-        let last = ctx.strings.get(last).expect("invalid interned string");
+        let last = ctx
+            .strings()
+            .get(last)
+            .expect("invalid interned string")
+            .clone();
 
         if let Some(s) = ctx.structs.get(self) {
             let c = if s.builtin { BUILTIN } else { STRUCT };
@@ -47,33 +55,90 @@ impl Dump for Path<InternedString> {
             return out + &last.as_str().custom_color(BUILTIN).to_string();
         }
 
-        // special check if main
-        if last.as_str() == "main" {
-            return out + &last.as_str().custom_color(BUILTIN).to_string();
-        }
+        // // special check if main
+        // if last.as_str() == "main" {
+        //     return out + &last.as_str().custom_color(BUILTIN).to_string();
+        // }
 
         out + &last.as_str()
+    }
+}
+
+impl Dump for IRTypeInner {
+    fn dump(&self, ctx: &Context) -> String {
+        match self {
+            IRTypeInner::Any => "Any".custom_color(BUILTIN).to_string(),
+            IRTypeInner::Unreachable => "Unreachable".dimmed().to_string(),
+            IRTypeInner::Named(path) => path.dump(ctx),
+            IRTypeInner::Function { args, ret: ret_id } => {
+                // if any of the arg types are the same as any other type,
+                // it is a generic
+
+                const LETTERS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+                let mut letters = LETTERS.chars();
+
+                let mut seen = HashSet::new();
+                let mut generics = IndexMap::new();
+
+                for id in args.iter() {
+                    let ty = ctx.type_table.get(id).unwrap().inner();
+                    if let IRTypeInner::Any = ty {
+                        if seen.contains(id) {
+                            let letter = letters.next().unwrap();
+                            generics.insert(*id, letter);
+                        } else {
+                            seen.insert(*id);
+                        }
+                    }
+                }
+
+                let args = args
+                    .iter()
+                    .map(|id| match generics.get(id) {
+                        Some(letter) => letter.to_string().custom_color(STRUCT).to_string(),
+                        None => {
+                            let ty = ctx.type_table.get(id).unwrap();
+                            ty.dump(ctx)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                let ret = match generics.get(ret_id) {
+                    Some(letter) => letter.to_string().custom_color(STRUCT).to_string(),
+                    None => ctx.type_table.get(ret_id).unwrap().dump(ctx),
+                };
+
+                let gens = generics
+                    .values()
+                    .map(|letter| letter.to_string().custom_color(STRUCT).to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                let gens = if gens.is_empty() {
+                    String::new()
+                } else {
+                    format!("<{}>", gens)
+                };
+
+                // let ret = format!("{}>{}", ret_id, ret);
+                format!(
+                    "{}{}({}) -> {}",
+                    "fn".custom_color(KEYWORD),
+                    gens,
+                    args,
+                    ret
+                )
+            }
+        }
     }
 }
 
 impl Dump for IRType {
     fn dump(&self, ctx: &Context) -> String {
         match self {
-            IRType::Any => "Any".custom_color(BUILTIN).to_string(),
-            IRType::Unreachable => "Unreachable".dimmed().to_string(),
-            IRType::Named(path) => path.dump(ctx),
-            IRType::Function { args, ret } => {
-                let args = args
-                    .iter()
-                    .map(|id| {
-                        let ty = ctx.type_table.get(id).unwrap();
-                        ty.dump(ctx)
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let ret = ctx.type_table.get(ret).unwrap().dump(ctx);
-                format!("{}({}) -> {}", "fn".custom_color(KEYWORD), args, ret)
-            }
+            IRType::Rigid(inner) => format!("🔒{}", inner.dump(ctx)),
+            IRType::Free(inner) => inner.dump(ctx),
         }
     }
 }
@@ -86,7 +151,11 @@ impl Dump for IRConstant {
             IRConstant::Int(i) => i.to_string().custom_color(NUMBER).to_string(),
             IRConstant::Float(f) => f.to_string().custom_color(NUMBER).to_string(),
             IRConstant::String(s) => {
-                let s = ctx.strings.get(*s).expect("invalid interned string");
+                let s = ctx
+                    .strings()
+                    .get(*s)
+                    .expect("invalid interned string")
+                    .clone();
                 format!("{:?}", s).custom_color(STRING).to_string()
             }
         };
@@ -198,7 +267,7 @@ impl IRFunction {
 
 impl IRCompiler {
     pub fn dump_types(&self) {
-        let ctx = self.ctx();
+        let ctx = self.ctx_ref();
         println!("Types:");
         for (id, ty) in &ctx.type_table {
             println!(
@@ -212,14 +281,18 @@ impl IRCompiler {
     pub fn dump(&self) {
         self.dump_types();
 
-        let ctx = self.ctx();
+        let ctx = self.ctx_ref();
 
         println!("\nFunctions:");
 
-        for function in [&self.level.function]
-            .into_iter()
-            .chain(ctx.functions.values())
-        {
+        // for function in [&self.level.function]
+        //     .into_iter()
+        //     .chain(ctx.functions.values())
+        // {
+        //     println!("{}", function.dump(&ctx));
+        // }
+
+        for function in ctx.functions.values() {
             println!("{}", function.dump(&ctx));
         }
     }

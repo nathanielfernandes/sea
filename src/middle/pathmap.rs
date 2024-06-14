@@ -68,6 +68,10 @@ impl<K: Copy + Hash + Eq, V> PathMap<K, V> {
             .collect()
     }
 
+    pub fn keys(&self) -> impl Iterator<Item = &Path<K>> {
+        self.map.keys()
+    }
+
     pub fn values(&self) -> impl Iterator<Item = &V> {
         self.map.values()
     }

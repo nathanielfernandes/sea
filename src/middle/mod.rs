@@ -5,7 +5,7 @@ pub mod pool;
 
 use std::{cell::RefCell, hash::Hash};
 
-use hashbrown::{HashMap, HashSet};
+use hashbrown::HashSet;
 use indexmap::IndexMap;
 use pathmap::{Path, PathMap};
 use pool::Pool;
@@ -24,14 +24,22 @@ pub struct Context {
     pub type_table: IndexMap<TypeId, IRType>,
     next_type_id: TypeId,
 
-    pub strings: Pool<String, InternedString>,
+    strings: RefCell<Pool<String, InternedString>>,
 
-    // (type_id, is_rigid?)
-    pub types: PathMap<InternedString, (TypeId, bool)>,
+    pub types: PathMap<InternedString, TypeId>,
     pub functions: PathMap<InternedString, IRFunction>,
     pub structs: PathMap<InternedString, IRStruct>,
     pub builtin_functions: PathMap<InternedString, TypeId>,
 }
+
+type Tpath = &'static [&'static str];
+pub const ANY: Tpath = &["Any"];
+pub const UNREACHABLE: Tpath = &["core", "!Unreachable"];
+pub const UNIT: Tpath = &["Unit"];
+pub const BOOL: Tpath = &["Bool"];
+pub const INT: Tpath = &["Int"];
+pub const FLOAT: Tpath = &["Float"];
+pub const STRING: Tpath = &["String"];
 
 impl Context {
     pub fn new() -> Self {
@@ -43,7 +51,7 @@ impl Context {
                 // id 0 will always be an empty string
                 let mut strings = Pool::new();
                 strings.add("@temp".to_string());
-                strings
+                RefCell::new(strings)
             },
 
             types: PathMap::new(),
@@ -53,17 +61,29 @@ impl Context {
         }
     }
 
-    pub fn path_from<S: ToString>(&mut self, path: &[S]) -> Path<InternedString> {
+    pub fn strings(&self) -> std::cell::Ref<Pool<String, InternedString>> {
+        self.strings.borrow()
+    }
+
+    pub fn strings_mut(&self) -> std::cell::RefMut<Pool<String, InternedString>> {
+        self.strings.borrow_mut()
+    }
+
+    pub fn path_from<S: ToString>(&self, path: &[S]) -> Path<InternedString> {
         Path::from_iter(path.iter().map(|part| self.intern_string(part.to_string())))
     }
 
-    pub fn get_type(&mut self, path: Path<InternedString>) -> Option<(TypeId, bool)> {
+    pub fn get_type(&self, path: Path<InternedString>) -> Option<TypeId> {
         self.types.get(&path).copied()
+    }
+
+    pub fn get_type_from<S: ToString>(&self, path: &[S]) -> Option<TypeId> {
+        self.get_type(self.path_from(path))
     }
 
     pub fn new_struct<S: ToString>(&mut self, path: &[S], span: Span<()>, builtin: bool) -> TypeId {
         let path = self.path_from(path);
-        let ty = self.new_type(IRType::Named(path.clone()));
+        let ty = self.new_rigid_type(path.clone(), IRTypeInner::Named(path.clone()));
 
         let strct = IRStruct {
             path: span.span(path.clone()),
@@ -75,17 +95,17 @@ impl Context {
             builtin,
         };
 
-        self.structs.insert(path, strct);
+        self.structs.insert(path.clone(), strct);
 
         ty
     }
 
-    pub fn intern_string<S: ToString>(&mut self, string: S) -> InternedString {
-        self.strings.add(string.to_string())
+    pub fn intern_string<S: ToString>(&self, string: S) -> InternedString {
+        self.strings.borrow_mut().add(string.to_string())
     }
 
-    pub fn re_intern_string<S: ToString>(&mut self, string: S) -> InternedString {
-        self.strings.add_force(string.to_string())
+    pub fn re_intern_string<S: ToString>(&self, string: S) -> InternedString {
+        self.strings.borrow_mut().add_force(string.to_string())
     }
 
     pub fn new_type(&mut self, ty: IRType) -> TypeId {
@@ -94,18 +114,107 @@ impl Context {
         self.type_table.insert(id, ty);
         id
     }
+
+    pub fn new_rigid_type(&mut self, path: Path<InternedString>, ty: IRTypeInner) -> TypeId {
+        let ty = self.new_type(IRType::Rigid(ty));
+
+        self.types.insert(path, ty);
+
+        ty
+    }
+    pub fn new_free_type(&mut self, ty: IRTypeInner) -> TypeId {
+        self.new_type(IRType::Free(ty))
+    }
+
+    // expects the ty to exist
+    // given a type, if it is rigid, return a new free one, if it is free just return it
+    fn free_type(&mut self, ty_id: TypeId) -> TypeId {
+        let ty = self.type_table.get(&ty_id).expect("Type not found");
+        match ty {
+            IRType::Rigid(ty) => self.new_free_type(ty.clone()),
+            IRType::Free(_) => ty_id,
+        }
+    }
+
+    #[allow(non_snake_case)]
+    fn Unit(&self) -> TypeId {
+        self.get_type_from(UNIT).expect("Unit type not found")
+    }
+
+    #[allow(non_snake_case)]
+    fn Bool(&self) -> TypeId {
+        self.get_type_from(BOOL).expect("Bool type not found")
+    }
+
+    #[allow(non_snake_case)]
+    fn Int(&self) -> TypeId {
+        self.get_type_from(INT).expect("Int type not found")
+    }
+
+    #[allow(non_snake_case)]
+    fn Float(&self) -> TypeId {
+        self.get_type_from(FLOAT).expect("Float type not found")
+    }
+
+    #[allow(non_snake_case)]
+    fn String(&self) -> TypeId {
+        self.get_type_from(STRING).expect("String type not found")
+    }
+
+    // any is the unresolved type, so make a type for it everytime
+    #[allow(non_snake_case)]
+    fn Any(&self) -> TypeId {
+        self.get_type_from(ANY).expect("Any type not found")
+    }
+
+    #[allow(non_snake_case)]
+    fn AnyFree(&mut self) -> TypeId {
+        self.free_type(self.Any())
+    }
+
+    #[allow(non_snake_case)]
+    fn Unreachable(&self) -> TypeId {
+        self.get_type_from(UNREACHABLE)
+            .expect("Unreachable type not found")
+    }
 }
+
+// non rigid types can be updated later on to less or more specific types
+// during inference, rigid types will raise a type error if they are not the same
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum IRType {
+    Rigid(IRTypeInner),
+    Free(IRTypeInner),
+}
+
+impl IRType {
+    pub fn is_rigid(&self) -> bool {
+        matches!(self, IRType::Rigid(_))
+    }
+
+    pub fn inner(&self) -> &IRTypeInner {
+        match self {
+            IRType::Rigid(ty) => ty,
+            IRType::Free(ty) => ty,
+        }
+    }
+
+    pub fn to_inner(self) -> IRTypeInner {
+        match self {
+            IRType::Rigid(ty) => ty,
+            IRType::Free(ty) => ty,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum IRTypeInner {
     Unreachable,
 
-    // non rigid types can be updated later on to less or more specific types
-    // during inference, rigid types will raise a type error if they are not the same
     Any,
-    // RigidAny,
     Named(Path<InternedString>),
-    // RigidNamed(Path<InternedString>),
+
     Function {
         args: SmallVec<[TypeId; 4]>,
         ret: TypeId,
@@ -211,6 +320,15 @@ pub struct IRFunction {
     pub blocks: IndexMap<BlockId, Block>,
 }
 
+impl IRFunction {
+    pub fn get_local(&self, id: &VariableId) -> &IRVariable {
+        match self.locals.get(id) {
+            Some(local) => local,
+            None => self.params.get(id).expect("no variable"),
+        }
+    }
+}
+
 pub struct Method {
     pub path: Span<Path<InternedString>>,
     pub ty: TypeId,
@@ -234,7 +352,7 @@ pub struct Level {
     // variable name -> variable
     pub symbols: Pool<InternedString, VariableId>,
     // type name -> type
-    pub types: HashMap<InternedString, TypeId>,
+    // pub types: HashMap<InternedString, TypeId>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -285,23 +403,11 @@ impl Level {
 
         return vs;
     }
-
-    pub fn get_type(&self, name: InternedString) -> Option<TypeId> {
-        if let Some(ty) = self.types.get(&name) {
-            return Some(*ty);
-        }
-
-        if let Some(enclosing) = &self.enclosing {
-            return enclosing.get_type(name);
-        }
-
-        None
-    }
 }
 
 #[derive(Debug)]
 pub enum IRCompileError {
-    UnkownType(Span<String>),
+    UnkownType(Span<Vec<String>>),
     UndefinedVariable(Span<String>),
     UninitializedVariable(Span<String>),
 }
@@ -312,6 +418,7 @@ pub struct IRCompiler {
     level: Level,
 
     pub context: RefCell<Context>,
+    pub passes: Vec<fn(&mut IRFunction, &mut Context)>,
 }
 
 impl IRCompiler {
@@ -342,81 +449,86 @@ impl IRCompiler {
                 },
                 scope_depth: 0,
                 symbols: Pool::new(),
-                types: HashMap::new(),
             },
             context: RefCell::new(Context::new()),
+            passes: Vec::new(),
         };
 
         // adding directly to context, makes it unaccessible
         // comp.ctx_mut().new_type(IRType::Any);
-        comp.new_type("!Unreachable", IRType::Unreachable);
+        comp.new_rigid_type(&["core", "!Unreachable"], IRTypeInner::Unreachable);
+        comp.new_rigid_type(&["Any"], IRTypeInner::Any);
 
-        let unit = comp.new_struct(&["core", "Unit"], Span::default(()), true);
-        let bool = comp.new_struct(&["core", "Bool"], Span::default(()), true);
-        let int = comp.new_struct(&["core", "Int"], Span::default(()), true);
-        let float = comp.new_struct(&["core", "Float"], Span::default(()), true);
-        let string = comp.new_struct(&["core", "String"], Span::default(()), true);
+        let unit = comp.ctx().new_struct(&["Unit"], Span::default(()), true);
+        comp.ctx().new_struct(&["Bool"], Span::default(()), true);
+        comp.ctx().new_struct(&["Int"], Span::default(()), true);
+        comp.ctx().new_struct(&["Float"], Span::default(()), true);
+        comp.ctx().new_struct(&["String"], Span::default(()), true);
 
-        let main = comp.ctx_mut().path_from(&["root", "main"]);
-        let fn_type = comp.ctx_mut().new_type(IRType::Function {
-            args: SmallVec::new(),
-            ret: unit,
-        });
+        let main = comp.ctx().path_from(&["entry", "main"]);
+        let fn_type = comp.ctx().new_rigid_type(
+            main.clone(),
+            IRTypeInner::Function {
+                args: SmallVec::new(),
+                ret: unit,
+            },
+        );
         comp.level.function.path = Span::default(main);
         comp.level.function.ty = fn_type;
 
         comp.new_builtin(&["core", "add"], {
-            let lhs = comp.Any();
-            IRType::Function {
-                args: smallvec![lhs, comp.Any()],
-                ret: lhs,
+            let t = comp.ctx().AnyFree();
+            IRTypeInner::Function {
+                args: smallvec![t, t],
+                ret: t,
             }
         });
 
-        comp.new_builtin(&["core", "mul"], {
-            let lhs = comp.Any();
-            IRType::Function {
-                args: smallvec![lhs, comp.Any()],
-                ret: lhs,
-            }
-        });
+        //  comp.new_builtin(&["core", "mul"], {
+        //    let lhs = comp.ctx().Any();
+        //     IRTypeInner::Function {
+        //         args: smallvec![lhs, comp.ctx().Any()],
+        //         ret: lhs,
+        //     }
+        // });
 
         comp
     }
 
-    fn new_builtin<S: ToString>(&mut self, path: &[S], ty: IRType) -> TypeId {
-        let path = self.ctx_mut().path_from(path);
-        let ty = self.ctx_mut().new_type(ty);
-        self.ctx_mut().builtin_functions.insert(path.clone(), ty);
+    pub fn pass(&mut self, pass: fn(&mut IRFunction, &mut Context)) {
+        self.passes.push(pass);
+    }
+
+    fn new_builtin<S: ToString>(&mut self, path: &[S], ty: IRTypeInner) -> TypeId {
+        let path = self.ctx_ref().path_from(path);
+        let ty = self.ctx().new_rigid_type(path.clone(), ty);
+        self.ctx().builtin_functions.insert(path, ty);
         ty
     }
-    fn ctx(&self) -> std::cell::Ref<Context> {
+    fn ctx_ref(&self) -> std::cell::Ref<Context> {
         self.context.borrow()
     }
 
-    fn ctx_mut(&self) -> std::cell::RefMut<Context> {
+    fn ctx(&self) -> std::cell::RefMut<Context> {
         self.context.borrow_mut()
     }
 
-    fn new_type<S: ToString>(&mut self, name: S, ty: IRType) -> TypeId {
-        let id = self.ctx_mut().new_type(ty);
-        self.set_type(name, id);
-
-        id
+    fn new_rigid_type<S: ToString>(&mut self, path: &[S], ty: IRTypeInner) -> TypeId {
+        let path = self.ctx().path_from(path);
+        self.ctx().new_rigid_type(path, ty)
     }
 
     fn add_type(&self, ty: IRType) -> TypeId {
-        let id = self.ctx_mut().new_type(ty);
+        let id = self.ctx().new_type(ty);
         id
     }
 
     fn update_type(&self, ty: TypeId, new_ty: IRType) {
-        self.ctx_mut().type_table.insert(ty, new_ty);
+        self.ctx().type_table.insert(ty, new_ty);
     }
 
-    fn set_type<S: ToString>(&mut self, name: S, ty: TypeId) {
-        let name = self.ctx_mut().intern_string(name);
-        self.level.types.insert(name, ty);
+    fn set_type(&mut self, path: Path<InternedString>, ty: TypeId) {
+        self.ctx().types.insert(path, ty);
     }
 
     // fn get_type<S: ToString>(&self, name: S) -> Option<TypeId> {
@@ -425,57 +537,104 @@ impl IRCompiler {
     // }
 
     fn get_builtin(&self, path: &Path<InternedString>) -> Option<TypeId> {
-        self.ctx().builtin_functions.get(path).copied()
+        self.ctx_ref().builtin_functions.get(path).copied()
     }
 
-    fn new_struct<S: ToString>(&mut self, path: &[S], span: Span<()>, builtin: bool) -> TypeId {
-        let name = path.last().expect("empty path").to_string();
-        let ty = {
-            let mut ctx = self.ctx_mut();
-            let ty = ctx.new_struct(path, span, builtin);
-            ty
-        };
+    // fn new_struct<S: ToString>(&mut self, path: &[S], span: Span<()>, builtin: bool) -> TypeId {
+    //     let name = path.last().expect("empty path").to_string();
+    //     let ty = {
+    //         let mut ctx = self.ctx_mut();
+    //         let ty = ctx.new_struct(path, span, builtin);
+    //         ty
+    //     };
 
-        self.set_type(name, ty);
+    //     self.set_type(name, ty);
 
-        ty
-    }
+    //     ty
+    // }
 
     #[allow(non_snake_case)]
     fn Unit(&self) -> TypeId {
-        self.get_type("Unit").expect("Unit type not found")
+        self.ctx_ref().Unit()
     }
 
     #[allow(non_snake_case)]
     fn Bool(&self) -> TypeId {
-        self.get_type("Bool").expect("Bool type not found")
+        self.ctx_ref().Bool()
     }
 
     #[allow(non_snake_case)]
     fn Int(&self) -> TypeId {
-        self.get_type("Int").expect("Int type not found")
+        self.ctx_ref().Int()
     }
 
     #[allow(non_snake_case)]
     fn Float(&self) -> TypeId {
-        self.get_type("Float").expect("Float type not found")
+        self.ctx_ref().Float()
     }
 
     #[allow(non_snake_case)]
     fn String(&self) -> TypeId {
-        self.get_type("String").expect("String type not found")
+        self.ctx_ref().String()
     }
 
     // any is the unresolved type, so make a type for it everytime
     #[allow(non_snake_case)]
     fn Any(&self) -> TypeId {
-        self.ctx_mut().new_type(IRType::Any)
+        self.ctx_ref().Any()
+    }
+
+    #[allow(non_snake_case)]
+    fn AnyFree(&mut self) -> TypeId {
+        self.ctx().AnyFree()
     }
 
     #[allow(non_snake_case)]
     fn Unreachable(&self) -> TypeId {
-        self.get_type("!Unreachable")
-            .expect("Unreachable type not found")
+        self.ctx_ref().Unreachable()
+    }
+
+    // runs passes and pushes a function
+    fn push_function(&mut self, mut function: IRFunction) {
+        let path = function.path.value.clone();
+
+        let mut ctx = self.ctx();
+        for pass in &self.passes {
+            pass(&mut function, &mut ctx);
+        }
+
+        ctx.functions.insert(path, function);
+    }
+
+    fn enter_level(&mut self, level: Level) {
+        let level = std::mem::replace(&mut self.level, level);
+        self.level.enclosing = Some(Box::new(level));
+    }
+
+    fn exit_level(&mut self) {
+        let enclosing = self.level.enclosing.take().expect("no enclosing level");
+        let level = std::mem::replace(&mut self.level, *enclosing);
+        self.push_function(level.function);
+    }
+
+    // where there is no enclosing level
+    // temp work around
+    fn exit_outmost_level(&mut self) {
+        let placeholder = Level {
+            enclosing: None,
+            function: IRFunction {
+                path: Span::default(Path::new()),
+                ty: 0,
+                params: IndexMap::new(),
+                locals: IndexMap::new(),
+                blocks: IndexMap::new(),
+            },
+            scope_depth: 0,
+            symbols: Pool::new(),
+        };
+        self.level.enclosing = Some(Box::new(placeholder));
+
+        self.exit_level();
     }
 
     fn new_symbol(&mut self, symbol: InternedString) -> VariableId {
@@ -494,8 +653,8 @@ impl IRCompiler {
                     VarState::Ok(var) => Ok(IRValue::Upvalue(var)),
                     VarState::Undefined | VarState::Uninitialized => {
                         let real_name = self
-                            .ctx()
-                            .strings
+                            .ctx_ref()
+                            .strings()
                             .get(name.value)
                             .expect("invalid interned string")
                             .to_string();
@@ -622,19 +781,25 @@ impl IRCompiler {
             self.compile_statement(statement, None)?;
         }
 
+        self.exit_outmost_level();
+
         Ok(())
+    }
+
+    fn get_type<S: ToString>(&self, path: &[S]) -> Option<TypeId> {
+        self.ctx_ref().get_type_from(path)
     }
 
     fn compile_type(&mut self, ty: &Option<Span<Type>>) -> Result<Span<TypeId>> {
         let Some(ty) = ty else {
-            return Ok(Span::default(self.Any()));
+            return Ok(Span::default(self.AnyFree()));
         };
 
         match &ty.value {
             Type::Any => Ok(ty.span(self.Any())),
-            Type::Named(path) => match self.get_type(name) {
+            Type::Named(path) => match self.get_type(&path.borrow()) {
                 Some(t) => Ok(ty.span(t)),
-                None => Err(IRCompileError::UnkownType(ty.span(name.to_string()))),
+                None => Err(IRCompileError::UnkownType(ty.span(path.borrow().clone()))),
             },
             // Type::Generic { name, .. } => {}
             _ => todo!("compile_type {:?}", ty),
@@ -654,7 +819,7 @@ impl IRCompiler {
                 value,
             } => {
                 let ty = self.compile_type(ty)?;
-                let name = name.span(self.ctx_mut().intern_string(&name.value));
+                let name = name.span(self.ctx().intern_string(&name.value));
                 let target = self.declare_local(name, ty)?;
 
                 self.compile_expression(value, Some(target))?;
@@ -662,7 +827,7 @@ impl IRCompiler {
                 Ok(())
             }
             Statement::Assignment { name, value } => {
-                let name = name.span(self.ctx_mut().intern_string(&name.value));
+                let name = name.span(self.ctx().intern_string(&name.value));
                 let target = self.get_value(name, true)?;
 
                 let target = match target {
@@ -694,7 +859,7 @@ impl IRCompiler {
                     Literal::Bool(b) => IRConstant::Bool(*b),
                     Literal::Int(i) => IRConstant::Int(*i),
                     Literal::Float(f) => IRConstant::Float(*f),
-                    Literal::String(s) => IRConstant::String(self.ctx_mut().intern_string(s)),
+                    Literal::String(s) => IRConstant::String(self.ctx().intern_string(s)),
                 };
 
                 let value = IRValue::Constant(Span {
@@ -718,7 +883,7 @@ impl IRCompiler {
                 Ok(Some(value))
             }
             Expression::Symbol(symbol) => {
-                let sym = self.ctx_mut().intern_string(symbol);
+                let sym = self.ctx().intern_string(symbol);
                 let value = self.get_value(
                     Span {
                         start: *start,
@@ -783,8 +948,8 @@ impl IRCompiler {
 
     fn compile_binary_op(&self, op: &BinaryOp) -> IRValue {
         match op {
-            BinaryOp::Add => IRValue::BuiltinFunction(self.ctx_mut().path_from(&["core", "add"])),
-            BinaryOp::Mul => IRValue::BuiltinFunction(self.ctx_mut().path_from(&["core", "mul"])),
+            BinaryOp::Add => IRValue::BuiltinFunction(self.ctx().path_from(&["core", "add"])),
+            BinaryOp::Mul => IRValue::BuiltinFunction(self.ctx().path_from(&["core", "mul"])),
             _ => todo!(),
         }
     }

@@ -4,45 +4,22 @@
 
 A dynamic progamming language that transpiles to C.
 
-currently working on the parser, and IR generation.
+The goal for sea is to feel like an interpreted language, but with the performance of a compiled language.
 
-```rust
-let a = 20;
-let a = 30 + a;
+This will be achieved by using type inference and user defined types to generate as close to optimal C code as possible.
 
-let b = {
-    let b = {
-        a
-    };
+Types are dynamic by default, and can be inferred by the compiler. However, user's can statically define types for better performance, offloading type checking to the compiler, instead of the runtime.
 
-    b
-};
-```
+source --(lexer)-> tokens --(parser)-> ast --(irgen)-> ir --(codegen)-> c
 
-ir output:
+the parser/lexer is at a decent state for now, currently working on the irgen and static passes for the ir.
 
-```rust
-fn __main() -> Unit {
-  let _0: Any;
-  let _1: Any;
-  let _2: Any;
-  let _3: Any;
+Basic type inference with generic types currently works.
 
-  bb0: {
-    _0 = const 20;
-    _1 = add(const 30, _0) -> [goto bb1];
-  }
+### example:
 
-  bb1: {
-    _3 = <upvalue: _1> -> [goto bb2];
-  }
+![code](./assets/code.png)
 
-  bb2: {
-    _2 = _3 -> [goto bb3];
-  }
+IR output
 
-  bb3: {
-    [return];
-  }
-}
-```
+![ir](./assets/ir.png)

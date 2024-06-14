@@ -2,7 +2,8 @@ use std::fs::read_to_string;
 
 use eyre::Result;
 
-use sea::compiler::Compiler;
+use sea::middle::passes::inference::inference;
+// use sea::compiler::Compiler;
 use sea::middle::IRCompiler;
 use sea::parser;
 use sea::parser::debug::print_statement;
@@ -37,11 +38,11 @@ fn main() {
 
     let mut ircompiler = IRCompiler::new();
 
+    ircompiler.pass(inference);
+
     if let Err(err) = ircompiler.compile(&statements) {
         println!("{:?}", err);
     }
-
-    ircompiler.run_inference();
 
     ircompiler.dump();
     // for statement in statements.iter() {
