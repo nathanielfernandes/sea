@@ -31,6 +31,12 @@ typedef struct {
 #define Float(x) ((Value){FLOAT, .data.Float = x})
 #define String(x) ((Value){STRING, .data.String = to_string(x)})
 
+typedef int Unit;
+typedef int Bool;
+typedef int64_t Int;
+typedef double Float;
+typedef string String;
+
 #define EXPECT_BOOL(x)                                                         \
     ({                                                                         \
         if (x.type != BOOL)                                                    \
@@ -70,130 +76,134 @@ char *nameof(Value x) {
     }
 }
 
-Result print(Value x);
-Result println(Value x);
+Unit print(Value x);
+Unit println(Value x);
 
 string to_string(char *x) { return (string){.data = x}; }
 
-Result add(Value x, Value y) {
-    Value res;
+Int core__add(Int x, Int y) { return x + y; }
+Int core__sub(Int x, Int y) { return x - y; }
+Int core__lt(Int x, Int y) { return x < y; }
 
-    switch (x.type) {
-    case INT:
-        switch (y.type) {
-        case INT:
-            res = Int(x.data.Int + y.data.Int);
-            break;
-        case FLOAT:
-            res = Float(x.data.Int + y.data.Float);
-            break;
-        default:
-            return Err(String("Type mismatch in add"));
-        }
-        break;
-    case FLOAT:
-        switch (y.type) {
-        case INT:
-            res = Float(x.data.Float + y.data.Int);
-            break;
-        case FLOAT:
-            res = Float(x.data.Float + y.data.Float);
-            break;
-        default:
-            return Err(String("Type mismatch in add"));
-        }
-        break;
-    case STRING:
-        switch (y.type) {
-        case STRING: {
-            int total_length =
-                strlen(x.data.String.data) + strlen(y.data.String.data);
-            char *result = malloc(total_length + 1);
-            strcpy(result, x.data.String.data);
-            strcat(result, y.data.String.data);
-            res = String(result);
-            break;
-        }
-        default:
-            return Err(String("Type mismatch in add"));
-        }
-        break;
-    default:
-        return Err(String("Type mismatch in add"));
-    }
+// Result core__add(Value x, Value y) {
+//     Value res;
 
-    return Ok(res);
-}
+//     switch (x.type) {
+//     case INT:
+//         switch (y.type) {
+//         case INT:
+//             res = Int(x.data.Int + y.data.Int);
+//             break;
+//         case FLOAT:
+//             res = Float(x.data.Int + y.data.Float);
+//             break;
+//         default:
+//             return Err(String("Type mismatch in add"));
+//         }
+//         break;
+//     case FLOAT:
+//         switch (y.type) {
+//         case INT:
+//             res = Float(x.data.Float + y.data.Int);
+//             break;
+//         case FLOAT:
+//             res = Float(x.data.Float + y.data.Float);
+//             break;
+//         default:
+//             return Err(String("Type mismatch in add"));
+//         }
+//         break;
+//     case STRING:
+//         switch (y.type) {
+//         case STRING: {
+//             int total_length =
+//                 strlen(x.data.String.data) + strlen(y.data.String.data);
+//             char *result = malloc(total_length + 1);
+//             strcpy(result, x.data.String.data);
+//             strcat(result, y.data.String.data);
+//             res = String(result);
+//             break;
+//         }
+//         default:
+//             return Err(String("Type mismatch in add"));
+//         }
+//         break;
+//     default:
+//         return Err(String("Type mismatch in add"));
+//     }
 
-Result sub(Value x, Value y) {
-    Value res;
+//     return Ok(res);
+// }
 
-    switch (x.type) {
-    case INT:
-        switch (y.type) {
-        case INT:
-            res = Int(x.data.Int - y.data.Int);
-            break;
-        case FLOAT:
-            res = Float(x.data.Int - y.data.Float);
-            break;
-        default:
-            return Err(String("Type mismatch in add"));
-        }
-        break;
-    case FLOAT:
-        switch (y.type) {
-        case INT:
-            res = Float(x.data.Float - y.data.Int);
-            break;
-        case FLOAT:
-            res = Float(x.data.Float - y.data.Float);
-            break;
-        default:
-            return Err(String("Type mismatch in add"));
-        }
-        break;
-    default:
-        return Err(String("Type mismatch in add"));
-    }
+// Result sub(Value x, Value y) {
+//     Value res;
 
-    return Ok(res);
-}
+//     switch (x.type) {
+//     case INT:
+//         switch (y.type) {
+//         case INT:
+//             res = Int(x.data.Int - y.data.Int);
+//             break;
+//         case FLOAT:
+//             res = Float(x.data.Int - y.data.Float);
+//             break;
+//         default:
+//             return Err(String("Type mismatch in add"));
+//         }
+//         break;
+//     case FLOAT:
+//         switch (y.type) {
+//         case INT:
+//             res = Float(x.data.Float - y.data.Int);
+//             break;
+//         case FLOAT:
+//             res = Float(x.data.Float - y.data.Float);
+//             break;
+//         default:
+//             return Err(String("Type mismatch in add"));
+//         }
+//         break;
+//     default:
+//         return Err(String("Type mismatch in add"));
+//     }
 
-Result less(Value x, Value y) {
-    Value res;
+//     return Ok(res);
+// }
 
-    switch (x.type) {
-    case INT:
-        switch (y.type) {
-        case INT:
-            res = Bool(x.data.Int < y.data.Int);
-            break;
-        case FLOAT:
-            res = Bool(x.data.Int < y.data.Float);
-            break;
-        default:
-            return Err(String("Type mismatch in less"));
-        }
-        break;
-    case FLOAT:
-        switch (y.type) {
-        case INT:
-            res = Bool(x.data.Float < y.data.Int);
-            break;
-        case FLOAT:
-            res = Bool(x.data.Float < y.data.Float);
-            break;
-        default:
-            return Err(String("Type mismatch in less"));
-        }
-        break;
-    default:
-        return Err(String("Type mismatch in less"));
-    }
+// Result less(Value x, Value y) {
+//     Value res;
 
-    return Ok(res);
-}
+//     switch (x.type) {
+//     case INT:
+//         switch (y.type) {
+//         case INT:
+//             res = Bool(x.data.Int < y.data.Int);
+//             break;
+//         case FLOAT:
+//             res = Bool(x.data.Int < y.data.Float);
+//             break;
+//         default:
+//             return Err(String("Type mismatch in less"));
+//         }
+//         break;
+//     case FLOAT:
+//         switch (y.type) {
+//         case INT:
+//             res = Bool(x.data.Float < y.data.Int);
+//             break;
+//         case FLOAT:
+//             res = Bool(x.data.Float < y.data.Float);
+//             break;
+//         default:
+//             return Err(String("Type mismatch in less"));
+//         }
+//         break;
+//     default:
+//         return Err(String("Type mismatch in less"));
+//     }
+
+//     return Ok(res);
+// }
 
 Result mul(Value x, Value y) {
     Value res;
@@ -277,7 +287,7 @@ Result equals(Value x, Value y) {
     return Ok(res);
 }
 
-Result print(Value x) {
+Unit print(Value x) {
     switch (x.type) {
     case UNIT:
         printf("()");
@@ -295,13 +305,9 @@ Result print(Value x) {
         printf("%s", (char *)x.data.String.data);
         break;
     }
-
-    return Ok(Unit());
 }
 
-Result println(Value x) {
+Unit println(Value x) {
     print(x);
     printf("\n");
-
-    return Ok(Unit());
 }

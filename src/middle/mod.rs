@@ -11,7 +11,7 @@ use pathmap::{Path, PathMap};
 use pool::Pool;
 use smallvec::{smallvec, SmallVec};
 
-use crate::parser::{scanner::Span, BinaryOp, Expression, Literal, Statement, Type};
+use crate::parser::{scanner::Span, BinaryOp, Expression, Function, Literal, Statement, Type};
 
 pub type InternedString = usize;
 pub type TypeId = usize;
@@ -73,12 +73,12 @@ impl Context {
         Path::from_iter(path.iter().map(|part| self.intern_string(part.to_string())))
     }
 
-    pub fn get_type(&self, path: Path<InternedString>) -> Option<TypeId> {
-        self.types.get(&path).copied()
+    pub fn get_type(&self, path: &Path<InternedString>) -> Option<TypeId> {
+        self.types.get(path).copied()
     }
 
     pub fn get_type_from<S: ToString>(&self, path: &[S]) -> Option<TypeId> {
-        self.get_type(self.path_from(path))
+        self.get_type(&self.path_from(path))
     }
 
     pub fn new_struct<S: ToString>(&mut self, path: &[S], span: Span<()>, builtin: bool) -> TypeId {
@@ -137,39 +137,39 @@ impl Context {
     }
 
     #[allow(non_snake_case)]
-    fn Unit(&self) -> TypeId {
+    pub fn Unit(&self) -> TypeId {
         self.get_type_from(UNIT).expect("Unit type not found")
     }
 
     #[allow(non_snake_case)]
-    fn Bool(&self) -> TypeId {
+    pub fn Bool(&self) -> TypeId {
         self.get_type_from(BOOL).expect("Bool type not found")
     }
 
     #[allow(non_snake_case)]
-    fn Int(&self) -> TypeId {
+    pub fn Int(&self) -> TypeId {
         self.get_type_from(INT).expect("Int type not found")
     }
 
     #[allow(non_snake_case)]
-    fn Float(&self) -> TypeId {
+    pub fn Float(&self) -> TypeId {
         self.get_type_from(FLOAT).expect("Float type not found")
     }
 
     #[allow(non_snake_case)]
-    fn String(&self) -> TypeId {
+    pub fn String(&self) -> TypeId {
         self.get_type_from(STRING).expect("String type not found")
     }
 
     // any is the unresolved type, so make a type for it everytime
     #[allow(non_snake_case)]
-    fn Any(&self) -> TypeId {
+    pub fn AnyRigid(&self) -> TypeId {
         self.get_type_from(ANY).expect("Any type not found")
     }
 
     #[allow(non_snake_case)]
-    fn AnyFree(&mut self) -> TypeId {
-        self.free_type(self.Any())
+    pub fn Any(&mut self) -> TypeId {
+        self.free_type(self.AnyRigid())
     }
 
     #[allow(non_snake_case)]
@@ -239,11 +239,21 @@ pub enum IRValue {
     BuiltinFunction(Path<InternedString>),
 }
 
+impl IRValue {
+    #[allow(non_snake_case)]
+    fn Unit() -> Self {
+        IRValue::Constant(Span::default(IRConstant::Unit))
+    }
+}
+
 pub enum IRExpression {
     Value(IRValue),
     Call {
         function: IRValue,
         args: SmallVec<[IRValue; 4]>,
+
+        // resolved function types after infrence
+        resolved_function: RefCell<Option<TypeId>>,
     },
 }
 
@@ -255,6 +265,7 @@ pub struct IRVariableMetadata {
     pub assigned: HashSet<StatementId>,     // statements that assign to this variable
     pub dead: bool,                         // is this variable dead?
     pub depth: usize,                       // scope depth
+    pub initialized: bool,                  // is this variable initialized?
 }
 
 pub struct IRVariable {
@@ -301,30 +312,107 @@ pub struct Block {
 }
 
 pub enum ControlFlow {
-    Continue,
+    None,
     Goto(BlockId),
     Branch {
-        condition: VariableId,
+        condition: IRValue,
         success: BlockId,
         otherwise: BlockId,
     },
-    Return(VariableId),
+    Return(VariableId), // should always be 0
 }
 
-pub struct IRFunction {
+pub enum IRFunction {
+    Building(TypeId),
+    Finished(IRFunctionInner),
+}
+
+impl IRFunction {
+    pub fn finished(&self) -> &IRFunctionInner {
+        match self {
+            IRFunction::Building(_) => panic!("function not finished"),
+            IRFunction::Finished(func) => func,
+        }
+    }
+
+    pub fn ty(&self) -> TypeId {
+        match self {
+            IRFunction::Building(ty) => *ty,
+            IRFunction::Finished(func) => func.ty,
+        }
+    }
+}
+
+pub struct IRFunctionInner {
     pub path: Span<Path<InternedString>>,
     pub ty: TypeId,
 
     pub params: IndexMap<VariableId, IRVariable>,
     pub locals: IndexMap<VariableId, IRVariable>,
     pub blocks: IndexMap<BlockId, Block>,
+
+    next_block_id: BlockId,
 }
 
-impl IRFunction {
+impl IRFunctionInner {
+    pub fn new(path: Span<Path<InternedString>>, ty: TypeId) -> Self {
+        IRFunctionInner {
+            path,
+            ty,
+            params: IndexMap::new(),
+            locals: IndexMap::new(),
+            blocks: {
+                let mut blocks = IndexMap::new();
+                blocks.insert(
+                    0,
+                    Block {
+                        id: 0,
+                        statements: Vec::new(),
+                        control_flow: ControlFlow::Return(0),
+                    },
+                );
+                blocks
+            },
+            next_block_id: 1,
+        }
+    }
+
+    pub fn enter_block(&mut self, force: bool) -> BlockId {
+        let Some(block) = self.blocks.values_mut().last() else {
+            panic!("no blocks");
+        };
+
+        if !force && block.statements.is_empty() {
+            return block.id;
+        }
+
+        let id = self.next_block_id;
+        block.control_flow = ControlFlow::Goto(id);
+
+        self.next_block_id += 1;
+        self.blocks.insert(
+            id,
+            Block {
+                id,
+                statements: Vec::new(),
+                control_flow: ControlFlow::Return(0),
+            },
+        );
+
+        id
+    }
+
     pub fn get_local(&self, id: &VariableId) -> &IRVariable {
         match self.locals.get(id) {
             Some(local) => local,
             None => self.params.get(id).expect("no variable"),
+        }
+    }
+
+    pub fn get_local_mut(&mut self, id: &VariableId) -> &mut IRVariable {
+        match self.locals.get_mut(id) {
+            Some(local) => local,
+            None => self.params.get_mut(id).expect("no variable"),
         }
     }
 }
@@ -346,7 +434,7 @@ pub struct IRStruct {
 
 pub struct Level {
     pub enclosing: Option<Box<Level>>,
-    pub function: IRFunction,
+    pub function: IRFunctionInner,
     pub scope_depth: usize,
 
     // variable name -> variable
@@ -391,7 +479,7 @@ impl Level {
                 continue;
             }
 
-            if initialized && meta.assigned.is_empty() {
+            if initialized && !meta.initialized {
                 vs = VarState::Uninitialized;
                 continue;
             }
@@ -410,43 +498,59 @@ pub enum IRCompileError {
     UnkownType(Span<Vec<String>>),
     UndefinedVariable(Span<String>),
     UninitializedVariable(Span<String>),
+    RedeclaredParameter(Span<String>),
 }
 
 type Result<T> = std::result::Result<T, IRCompileError>;
+
+macro_rules! builtins {
+    {
+        [$comp:ident]
+        $(
+            fn $($path:ident)::+$(<$($generic:ident),+>)?($($arg_ty:ident),*) -> $ret_ty:ident;
+        )*
+    } => {
+        #[allow(non_snake_case)]
+        {
+            $(
+                $comp.new_builtin(&[$(stringify!($path)),+], {
+                    let mut ctx = $comp.ctx();
+                    $($(let $generic = ctx.Any();)+)?
+
+                    IRTypeInner::Function {
+                        args: SmallVec::from_slice(&[$(builtins!(@type ctx $arg_ty),)*]),
+                        ret: builtins!(@type ctx $ret_ty),
+                    }
+                });
+            )*
+        }
+    };
+
+    {@type $ctx:ident Any} => { $ctx.AnyRigid() };
+    {@type $ctx:ident Unit} => { $ctx.Unit() };
+    {@type $ctx:ident Bool} => { $ctx.Bool() };
+    {@type $ctx:ident Int} => { $ctx.Int() };
+    {@type $ctx:ident Float} => { $ctx.Float() };
+    {@type $ctx:ident String} => { $ctx.String() };
+    {@type $ctx:ident $ty:ident} => { $ty };
+}
 
 pub struct IRCompiler {
     level: Level,
 
     pub context: RefCell<Context>,
-    pub passes: Vec<fn(&mut IRFunction, &mut Context)>,
+    pub passes: Vec<fn(&mut IRFunctionInner, &mut Context)>,
 }
 
 impl IRCompiler {
     const TEMP_ID: InternedString = 0;
+    const RETURN_ID: VariableId = 0;
 
     pub fn new() -> Self {
         let mut comp = IRCompiler {
             level: Level {
                 enclosing: None,
-                function: IRFunction {
-                    path: Span::default(Path::new()),
-                    ty: 0,
-
-                    params: IndexMap::new(),
-                    locals: IndexMap::new(),
-                    blocks: {
-                        let mut blocks = IndexMap::new();
-                        blocks.insert(
-                            0,
-                            Block {
-                                id: 0,
-                                statements: Vec::new(),
-                                control_flow: ControlFlow::Continue,
-                            },
-                        );
-                        blocks
-                    },
-                },
+                function: IRFunctionInner::new(Span::default(Path::new()), 0),
                 scope_depth: 0,
                 symbols: Pool::new(),
             },
@@ -476,26 +580,29 @@ impl IRCompiler {
         comp.level.function.path = Span::default(main);
         comp.level.function.ty = fn_type;
 
-        comp.new_builtin(&["core", "add"], {
-            let t = comp.ctx().AnyFree();
-            IRTypeInner::Function {
-                args: smallvec![t, t],
-                ret: t,
-            }
-        });
+        // create a temp variable for the return value
+        comp.temp(Span::default(unit))
+            .expect("failed to create temp");
 
-        //  comp.new_builtin(&["core", "mul"], {
-        //    let lhs = comp.ctx().Any();
-        //     IRTypeInner::Function {
-        //         args: smallvec![lhs, comp.ctx().Any()],
-        //         ret: lhs,
-        //     }
-        // });
+        builtins! {
+            [comp]
+
+            fn core::add<T>(T, T) -> T;
+            fn core::mul<T>(T, T) -> T;
+            fn core::sub<T>(T, T) -> T;
+            fn core::div<T>(T, T) -> T;
+
+            fn core::eq(Any, Any) -> Bool;
+            fn core::lt<T>(T, T) -> Bool;
+
+            fn print(Any) -> Unit;
+            fn println(Any) -> Unit;
+        }
 
         comp
     }
 
-    pub fn pass(&mut self, pass: fn(&mut IRFunction, &mut Context)) {
+    pub fn pass(&mut self, pass: fn(&mut IRFunctionInner, &mut Context)) {
         self.passes.push(pass);
     }
 
@@ -511,6 +618,10 @@ impl IRCompiler {
 
     fn ctx(&self) -> std::cell::RefMut<Context> {
         self.context.borrow_mut()
+    }
+
+    fn intern(&self, string: &str) -> InternedString {
+        self.ctx().intern_string(string)
     }
 
     fn new_rigid_type<S: ToString>(&mut self, path: &[S], ty: IRTypeInner) -> TypeId {
@@ -580,13 +691,13 @@ impl IRCompiler {
 
     // any is the unresolved type, so make a type for it everytime
     #[allow(non_snake_case)]
-    fn Any(&self) -> TypeId {
-        self.ctx_ref().Any()
+    fn AnyRigid(&self) -> TypeId {
+        self.ctx_ref().AnyRigid()
     }
 
     #[allow(non_snake_case)]
-    fn AnyFree(&mut self) -> TypeId {
-        self.ctx().AnyFree()
+    fn Any(&mut self) -> TypeId {
+        self.ctx().Any()
     }
 
     #[allow(non_snake_case)]
@@ -595,7 +706,7 @@ impl IRCompiler {
     }
 
     // runs passes and pushes a function
-    fn push_function(&mut self, mut function: IRFunction) {
+    fn push_function(&self, mut function: IRFunctionInner) {
         let path = function.path.value.clone();
 
         let mut ctx = self.ctx();
@@ -603,7 +714,7 @@ impl IRCompiler {
             pass(&mut function, &mut ctx);
         }
 
-        ctx.functions.insert(path, function);
+        ctx.functions.insert(path, IRFunction::Finished(function));
     }
 
     fn enter_level(&mut self, level: Level) {
@@ -612,37 +723,148 @@ impl IRCompiler {
     }
 
     fn exit_level(&mut self) {
-        let enclosing = self.level.enclosing.take().expect("no enclosing level");
+        let enclosing: Box<Level> = self.level.enclosing.take().expect("no enclosing level");
         let level = std::mem::replace(&mut self.level, *enclosing);
         self.push_function(level.function);
     }
 
-    // where there is no enclosing level
-    // temp work around
-    fn exit_outmost_level(&mut self) {
-        let placeholder = Level {
-            enclosing: None,
-            function: IRFunction {
-                path: Span::default(Path::new()),
-                ty: 0,
-                params: IndexMap::new(),
-                locals: IndexMap::new(),
-                blocks: IndexMap::new(),
-            },
-            scope_depth: 0,
-            symbols: Pool::new(),
-        };
-        self.level.enclosing = Some(Box::new(placeholder));
+    fn exit_outmost_level(mut self) -> Result<Context> {
+        {
+            let path = self.level.function.path.value.clone();
+            let mut ctx = self.context.borrow_mut();
+            for pass in &self.passes {
+                pass(&mut self.level.function, &mut ctx);
+            }
+            ctx.functions
+                .insert(path, IRFunction::Finished(self.level.function));
+        }
 
+        Ok(self.context.into_inner())
+    }
+
+    fn return_value(&mut self) {
+        let current_block = self.current_block();
+        self.enter_block(true);
+
+        self.patch_block(current_block, ControlFlow::Return(Self::RETURN_ID));
+
+        self.exit_block();
+    }
+
+    fn enter_function(&mut self, raw_path: &Span<RefCell<Vec<String>>>, ty: IRTypeInner) {
+        let ret_ty = match ty {
+            IRTypeInner::Function { ret, .. } => ret,
+            _ => panic!("not a function type"),
+        };
+
+        let path = self.ctx().path_from(&raw_path.value.borrow());
+
+        let ty = self.ctx().new_rigid_type(path.clone(), ty);
+
+        self.ctx()
+            .functions
+            .insert(path.clone(), IRFunction::Building(ty));
+
+        let function = IRFunctionInner::new(raw_path.span(path), ty);
+
+        self.enter_level(Level {
+            enclosing: None,
+            function,
+            scope_depth: self.level.scope_depth + 1,
+            symbols: Pool::new(),
+        });
+
+        // create a temp variable for the return value
+        self.temp(raw_path.span(ret_ty))
+            .expect("failed to create temp");
+    }
+
+    fn exit_function(&mut self) {
         self.exit_level();
+    }
+
+    fn enter_scope(&mut self) {
+        self.level.scope_depth += 1;
+    }
+
+    fn exit_scope(&mut self) {
+        self.level.scope_depth -= 1;
+
+        for local in self.level.function.locals.values_mut() {
+            let mut meta = local.metadata.borrow_mut();
+            if meta.depth > self.level.scope_depth {
+                meta.dead = true;
+            }
+        }
+    }
+
+    fn current_block(&self) -> BlockId {
+        self.level
+            .function
+            .blocks
+            .keys()
+            .last()
+            .copied()
+            .expect("no blocks")
+    }
+
+    fn next_block(&self) -> BlockId {
+        self.level.function.next_block_id
+    }
+
+    fn patch_block(&mut self, id: BlockId, control_flow: ControlFlow) {
+        let block = self.level.function.blocks.get_mut(&id).expect("no block");
+        block.control_flow = control_flow;
+    }
+
+    fn enter_block(&mut self, force: bool) -> BlockId {
+        self.level.function.enter_block(force)
+    }
+
+    fn exit_block(&mut self) -> BlockId {
+        self.level.function.enter_block(false)
+    }
+
+    fn enter_scoped_block(&mut self) -> BlockId {
+        self.enter_scope();
+        self.enter_block(false)
+    }
+
+    fn exit_scoped_block(&mut self) -> BlockId {
+        self.exit_scope();
+        self.exit_block()
     }
 
     fn new_symbol(&mut self, symbol: InternedString) -> VariableId {
         self.level.symbols.add(symbol)
     }
 
+    fn exclusive_symbol(&mut self, symbol: InternedString) -> Option<VariableId> {
+        self.level.symbols.add_checked(symbol)
+    }
+
     fn shadow_symbol(&mut self, symbol: InternedString) -> VariableId {
         self.level.symbols.add_force(symbol)
+    }
+
+    fn get_function_value(&self, name: Span<InternedString>) -> Result<IRValue> {
+        let path = Path::from(&[name.value]);
+
+        match self.ctx_ref().functions.get(&path) {
+            Some(_) => Ok(IRValue::Function(path)),
+            None => match self.ctx_ref().builtin_functions.get(&path) {
+                Some(_) => Ok(IRValue::BuiltinFunction(path)),
+                None => {
+                    let real_name = self
+                        .ctx_ref()
+                        .strings()
+                        .get(name.value)
+                        .expect("invalid interned string")
+                        .to_string();
+                    Err(IRCompileError::UndefinedVariable(name.span(real_name)))
+                }
+            },
+        }
     }
 
     fn get_value(&self, name: Span<InternedString>, need_init: bool) -> Result<IRValue> {
@@ -651,15 +873,7 @@ impl IRCompiler {
             VarState::Undefined | VarState::Uninitialized => {
                 match self.level.resolve_enclosing(name.value, need_init) {
                     VarState::Ok(var) => Ok(IRValue::Upvalue(var)),
-                    VarState::Undefined | VarState::Uninitialized => {
-                        let real_name = self
-                            .ctx_ref()
-                            .strings()
-                            .get(name.value)
-                            .expect("invalid interned string")
-                            .to_string();
-                        Err(IRCompileError::UndefinedVariable(name.span(real_name)))
-                    }
+                    VarState::Undefined | VarState::Uninitialized => self.get_function_value(name),
                 }
             }
         }
@@ -705,6 +919,7 @@ impl IRCompiler {
                             assigned: HashSet::new(),
                             dead: false,
                             depth: self.level.scope_depth,
+                            initialized: false,
                         }),
                     },
                 );
@@ -726,6 +941,42 @@ impl IRCompiler {
                     assigned: HashSet::new(),
                     dead: false,
                     depth: self.level.scope_depth,
+                    initialized: false,
+                }),
+            },
+        );
+
+        Ok(name.span(id))
+    }
+
+    fn declare_param(
+        &mut self,
+        name: Span<InternedString>,
+        ty: Span<TypeId>,
+    ) -> Result<Span<VariableId>> {
+        let id = self.exclusive_symbol(name.value).ok_or_else(|| {
+            let real_name = self
+                .ctx_ref()
+                .strings()
+                .get(name.value)
+                .expect("invalid interned string")
+                .to_string();
+            IRCompileError::RedeclaredParameter(name.span(real_name))
+        })?;
+
+        self.level.function.params.insert(
+            id,
+            IRVariable {
+                id,
+                metadata: RefCell::new(IRVariableMetadata {
+                    name: Some(name),
+                    ty,
+                    temp: false,
+                    used: HashSet::new(),
+                    assigned: HashSet::new(),
+                    dead: false,
+                    depth: self.level.scope_depth,
+                    initialized: true,
                 }),
             },
         );
@@ -750,10 +1001,11 @@ impl IRCompiler {
             .expect("no variable");
 
         var.metadata.borrow_mut().assigned.insert(statement.id);
+        var.metadata.borrow_mut().initialized = true;
 
         match &statement.expression {
             IRExpression::Value(IRValue::Local(id)) => {
-                let var = self.level.function.locals.get_mut(id).expect("no variable");
+                let var = self.level.function.get_local_mut(id);
                 var.metadata.borrow_mut().used.insert(statement.id);
             }
             IRExpression::Value(_) => {}
@@ -776,14 +1028,12 @@ impl IRCompiler {
         statements.push(statement);
     }
 
-    pub fn compile(&mut self, statements: &[Span<Statement>]) -> Result<()> {
+    pub fn compile(mut self, statements: &[Span<Statement>]) -> Result<Context> {
         for statement in statements {
             self.compile_statement(statement, None)?;
         }
 
-        self.exit_outmost_level();
-
-        Ok(())
+        self.exit_outmost_level()
     }
 
     fn get_type<S: ToString>(&self, path: &[S]) -> Option<TypeId> {
@@ -792,11 +1042,11 @@ impl IRCompiler {
 
     fn compile_type(&mut self, ty: &Option<Span<Type>>) -> Result<Span<TypeId>> {
         let Some(ty) = ty else {
-            return Ok(Span::default(self.AnyFree()));
+            return Ok(Span::default(self.Any()));
         };
 
         match &ty.value {
-            Type::Any => Ok(ty.span(self.Any())),
+            Type::Any => Ok(ty.span(self.AnyRigid())),
             Type::Named(path) => match self.get_type(&path.borrow()) {
                 Some(t) => Ok(ty.span(t)),
                 None => Err(IRCompileError::UnkownType(ty.span(path.borrow().clone()))),
@@ -819,7 +1069,7 @@ impl IRCompiler {
                 value,
             } => {
                 let ty = self.compile_type(ty)?;
-                let name = name.span(self.ctx().intern_string(&name.value));
+                let name = name.span(self.intern(&name.value));
                 let target = self.declare_local(name, ty)?;
 
                 self.compile_expression(value, Some(target))?;
@@ -827,12 +1077,12 @@ impl IRCompiler {
                 Ok(())
             }
             Statement::Assignment { name, value } => {
-                let name = name.span(self.ctx().intern_string(&name.value));
+                let name = name.span(self.intern(&name.value));
                 let target = self.get_value(name, true)?;
 
                 let target = match target {
                     IRValue::Local(id) => id,
-                    IRValue::Upvalue(id) => id,
+                    IRValue::Upvalue(_) => todo!("tried to use captured variable"),
                     _ => panic!("invalid value"),
                 };
 
@@ -840,10 +1090,52 @@ impl IRCompiler {
 
                 Ok(())
             }
+
+            Statement::Expression(expr) => {
+                self.compile_expression(expr, target)?;
+                Ok(())
+            }
+            Statement::Function(Function {
+                function_kind,
+                path,
+                params,
+                return_type,
+                body,
+            }) => {
+                let param_tys: Vec<Span<TypeId>> = params
+                    .iter()
+                    .map(|param| self.compile_type(&param.value.ty))
+                    .collect::<Result<_>>()?;
+
+                let return_ty = self.compile_type(return_type)?;
+
+                let ty = IRTypeInner::Function {
+                    args: param_tys.iter().map(|ty| ty.value).collect(),
+                    ret: return_ty.value,
+                };
+
+                self.enter_function(path, ty);
+
+                for (param, ty) in params.iter().zip(param_tys) {
+                    let name = param.value.name.span(self.intern(&param.value.name.value));
+                    self.declare_param(name, ty)?;
+                }
+
+                for statement in &body.value.statements {
+                    self.compile_statement(statement, None)?;
+                }
+
+                if let Some(ret) = &body.value.ret {
+                    let ret_target = ret.span(Self::RETURN_ID);
+                    self.compile_expression(ret, Some(ret_target))?;
+                }
+
+                self.exit_function();
+
+                Ok(())
+            }
             Statement::WhileLoop { condition, body } => todo!(),
             Statement::Struct { name, fields } => todo!(),
-            Statement::Expression(_) => todo!(),
-            Statement::Function(_) => todo!(),
         }
     }
 
@@ -859,7 +1151,7 @@ impl IRCompiler {
                     Literal::Bool(b) => IRConstant::Bool(*b),
                     Literal::Int(i) => IRConstant::Int(*i),
                     Literal::Float(f) => IRConstant::Float(*f),
-                    Literal::String(s) => IRConstant::String(self.ctx().intern_string(s)),
+                    Literal::String(s) => IRConstant::String(self.intern(s)),
                 };
 
                 let value = IRValue::Constant(Span {
@@ -883,7 +1175,7 @@ impl IRCompiler {
                 Ok(Some(value))
             }
             Expression::Symbol(symbol) => {
-                let sym = self.ctx().intern_string(symbol);
+                let sym = self.intern(symbol);
                 let value = self.get_value(
                     Span {
                         start: *start,
@@ -907,8 +1199,40 @@ impl IRCompiler {
 
                 Ok(Some(value))
             }
-            Expression::FunctionCall { func, args } => todo!(),
-            Expression::Parentheses(_) => todo!(),
+            Expression::FunctionCall { func, args } => {
+                let func = self.compile_expression(func, None)?.unwrap();
+                let mut arguments = SmallVec::with_capacity(args.len());
+                for arg in args {
+                    // we can unwrap because we provided no targets
+                    let arg = self.compile_expression(arg, None)?.unwrap();
+                    arguments.push(arg);
+                }
+
+                let target = match target {
+                    Some(target) => target,
+                    None => {
+                        let any = self.Any();
+                        self.temp(Span {
+                            start: *start,
+                            end: *end,
+                            value: any,
+                        })?
+                    }
+                };
+
+                self.push_statement(IRStatement::new(
+                    target.value,
+                    IRExpression::Call {
+                        function: func,
+                        args: arguments,
+                        resolved_function: RefCell::new(None),
+                    },
+                    Some(target.span(())),
+                ));
+
+                Ok(Some(IRValue::Local(target.value)))
+            }
+            Expression::Parentheses(expr) => self.compile_expression(expr, target),
             Expression::Binary { op, lhs, rhs } => {
                 // we can unwrap because we provided no targets
                 let lhs = self.compile_expression(lhs, None)?.unwrap();
@@ -917,11 +1241,14 @@ impl IRCompiler {
 
                 let target = match target {
                     Some(target) => target,
-                    None => self.temp(Span {
-                        start: *start,
-                        end: *end,
-                        value: self.Any(),
-                    })?,
+                    None => {
+                        let any = self.Any();
+                        self.temp(Span {
+                            start: *start,
+                            end: *end,
+                            value: any,
+                        })?
+                    }
                 };
 
                 self.push_statement(IRStatement::new(
@@ -929,28 +1256,136 @@ impl IRCompiler {
                     IRExpression::Call {
                         function: func,
                         args: smallvec![lhs, rhs],
+                        resolved_function: RefCell::new(None),
                     },
                     Some(target.span(())),
                 ));
 
                 Ok(Some(IRValue::Local(target.value)))
             }
-            Expression::Block { statements, ret } => todo!(),
+            Expression::Block { statements, ret } => {
+                self.enter_scoped_block();
+
+                for statement in statements {
+                    self.compile_statement(statement, None)?;
+                }
+
+                if let Some(ret) = ret {
+                    let ret = self.compile_expression(ret, target)?;
+                    self.exit_scoped_block();
+                    return Ok(ret);
+                }
+
+                let ret = IRValue::Constant(Span {
+                    start: *start,
+                    end: *end,
+                    value: IRConstant::Unit,
+                });
+
+                let target = match target {
+                    Some(target) => target,
+                    None => self.temp(Span {
+                        start: *start,
+                        end: *end,
+                        value: self.Unit(),
+                    })?,
+                };
+
+                self.push_statement(IRStatement::new(
+                    target.value,
+                    IRExpression::Value(ret),
+                    Some(target.span(())),
+                ));
+
+                self.exit_scoped_block();
+
+                Ok(Some(IRValue::Local(target.value)))
+            }
             Expression::If {
                 condition,
                 then,
-                otherwise,
-            } => todo!(),
-            Expression::Return(_) => todo!(),
+                otherwise: other,
+            } => {
+                let curr_block = self.current_block();
+                let condition = self.compile_expression(condition, None)?.unwrap();
+
+                let target = match target {
+                    Some(target) => target,
+                    None => self.temp(Span {
+                        start: *start,
+                        end: *end,
+                        value: self.Unit(),
+                    })?,
+                };
+
+                let success = self.enter_block(true);
+                self.compile_expression(then, Some(target))?;
+                let sucess_end = self.exit_block();
+
+                let mut otherwise = None;
+                let end;
+                if let Some(other) = other {
+                    otherwise = Some(self.enter_block(true));
+                    self.compile_expression(other, Some(target))?;
+                    end = self.enter_block(false);
+                } else {
+                    end = self.enter_block(true);
+                }
+
+                self.patch_block(
+                    curr_block,
+                    ControlFlow::Branch {
+                        condition,
+                        success,
+                        otherwise: otherwise.unwrap_or(end),
+                    },
+                );
+
+                self.patch_block(sucess_end, ControlFlow::Goto(end));
+
+                Ok(Some(IRValue::Local(target.value)))
+            }
+            Expression::Return(expr) => {
+                let target = Span {
+                    start: *start,
+                    end: *end,
+                    value: Self::RETURN_ID,
+                };
+
+                if let Some(expr) = expr {
+                    self.compile_expression(expr, Some(target))?;
+                } else {
+                    let unit = IRValue::Unit();
+                    self.push_statement(IRStatement::new(
+                        Self::RETURN_ID,
+                        IRExpression::Value(unit),
+                        Some(Span {
+                            start: *start,
+                            end: *end,
+                            value: (),
+                        }),
+                    ));
+                }
+
+                self.return_value();
+
+                Ok(None)
+            }
             Expression::Access { expr, field } => todo!(),
         }
     }
 
     fn compile_binary_op(&self, op: &BinaryOp) -> IRValue {
-        match op {
-            BinaryOp::Add => IRValue::BuiltinFunction(self.ctx().path_from(&["core", "add"])),
-            BinaryOp::Mul => IRValue::BuiltinFunction(self.ctx().path_from(&["core", "mul"])),
+        let path = match op {
+            BinaryOp::Add => &["core", "add"],
+            BinaryOp::Mul => &["core", "mul"],
+            BinaryOp::Sub => &["core", "sub"],
+            BinaryOp::Div => &["core", "div"],
+
+            BinaryOp::Equals => &["core", "eq"],
+            BinaryOp::Less => &["core", "lt"],
             _ => todo!(),
-        }
+        };
+        IRValue::BuiltinFunction(self.ctx_ref().path_from(path))
     }
 }

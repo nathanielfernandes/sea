@@ -2,6 +2,7 @@ use std::fs::read_to_string;
 
 use eyre::Result;
 
+use sea::compiler::Compiler;
 use sea::middle::passes::inference::inference;
 // use sea::compiler::Compiler;
 use sea::middle::IRCompiler;
@@ -40,47 +41,41 @@ fn main() {
 
     ircompiler.pass(inference);
 
-    if let Err(err) = ircompiler.compile(&statements) {
-        println!("{:?}", err);
-    }
-
-    ircompiler.dump();
-    // for statement in statements.iter() {
-    //     print_statement(statement, input, 0)
+    // if let Err(err) = ircompiler.compile(&statements) {
+    //     println!("{:?}", err);
     // }
 
-    // let ircompiler = IRCompiler::new("main");
-    // let functions = ircompiler.compile(&statements).expect("Failed to gen IR");
+    let ctx = match ircompiler.compile(&statements) {
+        Ok(ctx) => {
+            println!("{}", ctx.dump());
+            ctx
+        }
+        Err(err) => {
+            println!("{:?}", err);
+            return;
+        }
+    };
 
-    // for function in functions.iter() {
-    //     IRCompiler::print_function(function);
-    //     println!();
-    // }
+    let code = Compiler::new("user", ctx)
+        .compile()
+        .expect("Failed to compile");
 
-    // let compiler = Compiler::new("user");
+    std::fs::write("output.c", code).expect("Failed to write file");
 
-    // let code = compiler.compile(&functions).expect("Failed to compile");
+    call("clang-format", &["-i", "output.c"]).expect("Failed to format");
 
-    // let compiler = sea::compiler::Compiler::new("user".to_string());
+    call("gcc", &["output.c", "-O3", "-o", "output"]).expect("Failed to compile");
 
-    // let code = compiler.compile(&statements).expect("Failed to compile");
+    println!("\x1b[36m{}\x1b[0m", "-------------- Running --------------");
 
-    // std::fs::write("output.c", code).expect("Failed to write file");
+    let start = std::time::Instant::now();
+    call("./output", &[]).expect("Failed to run");
+    let end = start.elapsed();
 
-    // call("clang-format", &["-i", "output.c"]).expect("Failed to format");
+    println!(
+        "\n\x1b[36m{}\x1b[0m",
+        "-------------------------------------"
+    );
 
-    // call("gcc", &["output.c", "-O3", "-o", "output"]).expect("Failed to compile");
-
-    // println!("\x1b[36m{}\x1b[0m", "-------------- Running --------------");
-
-    // let start = std::time::Instant::now();
-    // call("./output", &[]).expect("Failed to run");
-    // let end = start.elapsed();
-
-    // println!(
-    //     "\n\x1b[36m{}\x1b[0m",
-    //     "-------------------------------------"
-    // );
-
-    // println!("\x1b[32m{}\x1b[0m", format!("Time: {:?}", end));
+    println!("\x1b[32m{}\x1b[0m", format!("Time: {:?}", end));
 }

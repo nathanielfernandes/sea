@@ -114,7 +114,7 @@ pub enum FunctionKind {
 #[derive(Debug, Clone)]
 pub struct Function {
     pub function_kind: Span<FunctionKind>,
-    pub name: Span<String>,
+    pub path: Span<RefCell<Vec<String>>>,
     pub params: Vec<Span<Param>>,
     pub return_type: Option<Span<Type>>,
     pub body: Span<Body>,
@@ -129,7 +129,7 @@ pub struct Body {
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: Span<String>,
-    pub ty: Span<Type>,
+    pub ty: Option<Span<Type>>,
 }
 
 #[derive(Debug, Clone)]
@@ -313,15 +313,15 @@ impl<'a> Parser<'a> {
                             self.ty()?
                         };
 
-                        let ty = ty.unwrap_or(Span {
-                            start: name_end,
-                            end: name_end,
-                            value: Type::Any,
-                        });
+                        // let ty = ty.unwrap_or(Span {
+                        //     start: name_end,
+                        //     end: name_end,
+                        //     value: Type::Any,
+                        // });
 
                         params.push(Span {
                             start: name_start,
-                            end: ty.end,
+                            end: name_end,
                             value: Param { name, ty },
                         });
                     }
@@ -588,18 +588,11 @@ impl<'a> Parser<'a> {
 
         self.match_token(Token::CloseRoundBracket)?;
 
-        let return_type = Some(
-            self.transaction(|this| {
-                this.match_token(Token::RightArrow)?;
-                let ty = this.ty()?;
-                Some(ty)
-            })
-            .unwrap_or(Span {
-                start: name_e,
-                end: name_e,
-                value: Type::Any,
-            }),
-        );
+        let return_type = self.transaction(|this| {
+            this.match_token(Token::RightArrow)?;
+            let ty = this.ty()?;
+            Some(ty)
+        });
 
         let body = self.body()?;
 
@@ -609,7 +602,11 @@ impl<'a> Parser<'a> {
             start: fn_start,
             end: body.end,
             value: Statement::Function(Function {
-                name,
+                path: Span {
+                    start: name_s,
+                    end: name_e,
+                    value: RefCell::new(vec![name.value]),
+                },
                 params,
                 return_type,
                 body,

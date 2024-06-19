@@ -163,20 +163,19 @@ impl Dump for IRConstant {
         format!("{} {}", "const".custom_color(KEYWORD), v)
     }
 }
-
-impl IRValue {
-    pub fn dump(&self, ctx: &Context) -> String {
+impl Dump for IRValue {
+    fn dump(&self, ctx: &Context) -> String {
         match self {
             IRValue::Constant(c) => c.value.dump(ctx),
             IRValue::Local(v) => format!("_{}", v).custom_color(IDENTIFIER).to_string(),
             IRValue::Upvalue(_) => todo!(),
-            IRValue::Function(_) => todo!(),
+            IRValue::Function(path) => path.dump(ctx),
             IRValue::BuiltinFunction(path) => path.dump(ctx),
         }
     }
 }
 
-impl IRStatement {
+impl Dump for IRStatement {
     fn dump(&self, ctx: &Context) -> String {
         if self.metadata.borrow().skip {
             return String::new();
@@ -189,7 +188,7 @@ impl IRStatement {
                 let value = value.dump(ctx);
                 format!("      {} = {};\n", target, value)
             }
-            IRExpression::Call { function, args } => {
+            IRExpression::Call { function, args, .. } => {
                 let function = function.dump(ctx);
                 let args = args
                     .iter()
@@ -202,7 +201,49 @@ impl IRStatement {
     }
 }
 
-impl Block {
+impl Dump for ControlFlow {
+    fn dump(&self, ctx: &Context) -> String {
+        let cf = match self {
+            ControlFlow::None => "none".custom_color(KEYWORD).to_string(),
+            ControlFlow::Goto(id) => {
+                let bb = format!("bb{}", id).custom_color(NUMBER);
+                let goto = "goto".custom_color(KEYWORD);
+                format!("{} -> {}", goto, bb)
+            }
+            ControlFlow::Branch {
+                condition,
+                success,
+                otherwise,
+            } => {
+                let cond = condition.dump(ctx);
+                let success = format!("bb{}", success).custom_color(NUMBER);
+                let otherwise = format!("bb{}", otherwise).custom_color(NUMBER);
+
+                format!(
+                    "{switch}({cond}) -> {success}, {otherwise}",
+                    switch = "switch".custom_color(KEYWORD),
+                    cond = cond,
+                    success = success,
+                    otherwise = otherwise
+                )
+            }
+            ControlFlow::Return(var) => {
+                let ret = "return".custom_color(KEYWORD);
+                let var = if var > &0 {
+                    format!(" _{}", var).custom_color(IDENTIFIER).to_string()
+                } else {
+                    String::new()
+                };
+
+                format!("{}{}", ret, var)
+            }
+        };
+
+        format!("      [{}];\n", cf)
+    }
+}
+
+impl Dump for Block {
     fn dump(&self, ctx: &Context) -> String {
         let mut out = String::new();
 
@@ -217,15 +258,21 @@ impl Block {
             out.push_str(&statement.dump(ctx));
         }
 
+        if !self.statements.is_empty() {
+            out.push_str("\n");
+        }
+
+        out.push_str(&self.control_flow.dump(ctx));
+
         out.push_str("    }\n");
 
         out
     }
 }
 
-impl IRFunction {
+impl Dump for IRFunctionInner {
     fn dump(&self, ctx: &Context) -> String {
-        let sep = if self.params.len() > 5 { ", " } else { ",\n" };
+        let sep = if self.params.len() > 5 { ",\n" } else { ", " };
 
         let format_var = |var: &IRVariable, pre: &str, suf: &str| {
             let name = format!("_{}", var.id).custom_color(IDENTIFIER);
@@ -250,50 +297,86 @@ impl IRFunction {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let mut blocks = String::new();
+        let mut blocks = Vec::new();
         for block in self.blocks.values() {
-            blocks.push_str(&block.dump(&ctx));
+            blocks.push(block.dump(&ctx));
         }
 
+        let func_ty = ctx.type_table.get(&self.ty).unwrap();
+        let ret = match func_ty.inner() {
+            IRTypeInner::Function { ret, .. } => ctx.type_table.get(ret).unwrap().dump(ctx),
+            _ => panic!("expected function type"),
+        };
+
         format!(
-            "{f} {name}({params}) {{\n{locals}\n\n{blocks}}}",
+            "{f} {name}({params}) -> {ret} {{\n{locals}\n\n{blocks}}}",
             f = "fn".custom_color(KEYWORD),
             name = self.path.value.dump(ctx),
             params = params,
-            locals = locals
+            ret = ret,
+            locals = locals,
+            blocks = blocks.join("\n")
         )
     }
 }
 
-impl IRCompiler {
-    pub fn dump_types(&self) {
-        let ctx = self.ctx_ref();
-        println!("Types:");
-        for (id, ty) in &ctx.type_table {
-            println!(
-                "{} => {}",
-                id.to_string().custom_color(NUMBER),
-                ty.dump(&ctx)
-            );
-        }
-    }
+impl Context {
+    pub fn dump(&self) -> String {
+        let mut out = String::new();
 
-    pub fn dump(&self) {
-        self.dump_types();
-
-        let ctx = self.ctx_ref();
-
-        println!("\nFunctions:");
-
-        // for function in [&self.level.function]
-        //     .into_iter()
-        //     .chain(ctx.functions.values())
-        // {
-        //     println!("{}", function.dump(&ctx));
+        // out.push_str("Types:\n");
+        // for (id, ty) in &self.type_table {
+        //     out.push_str(&format!(
+        //         "  {} => {}\n",
+        //         id.to_string().custom_color(NUMBER),
+        //         ty.dump(self)
+        //     ));
         // }
 
-        for function in ctx.functions.values() {
-            println!("{}", function.dump(&ctx));
+        out.push_str(
+            &("          Functions          "
+                .on_custom_color(FUNCTION)
+                .to_string()
+                + "\n"),
+        );
+        for function in self.functions.values() {
+            out.push_str(&function.finished().dump(self));
+            out.push_str("\n\n");
         }
+
+        out
     }
 }
+
+// impl IRCompiler {
+//     pub fn dump_types(&self) {
+//         let ctx = self.ctx_ref();
+//         println!("Types:");
+//         for (id, ty) in &ctx.type_table {
+//             println!(
+//                 "{} => {}",
+//                 id.to_string().custom_color(NUMBER),
+//                 ty.dump(&ctx)
+//             );
+//         }
+//     }
+
+//     pub fn dump(&self) {
+//         self.dump_types();
+
+//         let ctx = self.ctx_ref();
+
+//         println!("\nFunctions:");
+
+//         // for function in [&self.level.function]
+//         //     .into_iter()
+//         //     .chain(ctx.functions.values())
+//         // {
+//         //     println!("{}", function.dump(&ctx));
+//         // }
+
+//         for function in ctx.functions.values() {
+//             println!("{}", function.dump(&ctx));
+//         }
+//     }
+// }

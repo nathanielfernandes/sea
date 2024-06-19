@@ -50,13 +50,13 @@ pub fn print_statement(statement: &Span<Statement>, str: &str, depth: usize) {
         }
 
         Statement::Function(Function {
-            name: Span { value: name, .. },
+            path: Span { value: path, .. },
             params,
             body: block,
             return_type,
             function_kind: _,
         }) => {
-            println!("{padding}Function: {name}");
+            println!("{padding}Function: {path:?}");
 
             let padding = "  ".repeat(depth + 1);
 
@@ -67,7 +67,14 @@ pub fn print_statement(statement: &Span<Statement>, str: &str, depth: usize) {
                 println!(
                     "{padding}{}: {}",
                     param.value.name.value,
-                    type_to_string(&param.value.ty.value)
+                    type_to_string(
+                        &param
+                            .value
+                            .ty
+                            .clone()
+                            .unwrap_or_else(|| Span::default(Type::Any))
+                            .value
+                    )
                 );
             }
 
@@ -101,7 +108,14 @@ pub fn print_statement(statement: &Span<Statement>, str: &str, depth: usize) {
                 println!(
                     "{padding}{}: {}",
                     field.value.name.value,
-                    type_to_string(&field.value.ty.value)
+                    type_to_string(
+                        &field
+                            .value
+                            .ty
+                            .clone()
+                            .unwrap_or_else(|| Span::default(Type::Any))
+                            .value
+                    )
                 );
             }
         }
